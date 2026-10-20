@@ -2,8 +2,60 @@
 <resources>
     <string name="app_name">QuickRecord</string>
     <string name="tile_label">QuickRecord</string>
+
+    <!-- Notification -->
     <string name="notif_channel_name">Recording</string>
     <string name="notif_recording_title">Recording in progress</string>
-    <string name="notif_recording_text">Tap the tile again or the Stop action to save</string>
+    <string name="notif_recording_text">Tap the tile again or Stop to save</string>
     <string name="notif_action_stop">Stop</string>
+    <string name="notif_video_only">Video only, microphone unavailable</string>
+    <string name="notif_audio_only">Audio only, camera unavailable</string>
+    <string name="notif_segment_switch">Switching recording mode</string>
+    <string name="notif_battery_stop">Stopping: battery at %1$d%%</string>
+
+    <!-- Main screen -->
+    <string name="status_header">Status</string>
+    <string name="files_header">Recordings</string>
+    <string name="settings_header">Settings</string>
+    <string name="btn_grant_permissions">Grant permissions</string>
+    <string name="btn_refresh">Refresh</string>
+    <string name="btn_more_details">More details</string>
+    <string name="btn_close">Close</string>
+    <string name="btn_save">Save</string>
+    <string name="label_camera">Camera</string>
+    <string name="label_microphone">Microphone</string>
+    <string name="label_notifications">Notifications</string>
+    <string name="label_location">Location</string>
+    <string name="label_files_access">Files access</string>
+    <string name="label_recording_now">Recording now</string>
+    <string name="label_folder">Save folder</string>
+    <string name="label_last_error">Last error</string>
+    <string name="state_granted">granted</string>
+    <string name="state_missing">MISSING</string>
+    <string name="state_yes">yes</string>
+    <string name="state_no">no</string>
+    <string name="state_none">none</string>
+    <string name="hint_folder">Folder under Movies, for example QuickRecord</string>
+    <string name="empty_files">No recordings yet.</string>
+    <string name="made_in_israel">🇮🇱 Made proudly in Israel</string>
+
+    <!-- File details -->
+    <string name="details_header">File details</string>
+    <string name="detail_name">Name</string>
+    <string name="detail_path">Path</string>
+    <string name="detail_date">Date</string>
+    <string name="detail_size">Size</string>
+    <string name="detail_duration">Duration</string>
+    <string name="detail_resolution">Resolution</string>
+    <string name="detail_bitrate">Bitrate</string>
+    <string name="detail_location">Location</string>
+    <string name="detail_type">Type</string>
+    <string name="detail_id">MediaStore ID</string>
+    <string name="detail_mime">MIME type</string>
+    <string name="detail_added">Added to library</string>
+    <string name="detail_modified">Modified</string>
+    <string name="detail_width">Width</string>
+    <string name="detail_height">Height</string>
+    <string name="detail_framerate">Frame rate</string>
+    <string name="detail_unknown">unknown</string>
 </resources>
