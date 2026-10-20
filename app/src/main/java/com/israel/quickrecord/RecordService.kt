@@ -33,9 +33,12 @@ import android.os.VibrationEffect
 import android.os.VibratorManager
 import android.provider.MediaStore
 import android.service.quicksettings.TileService
+import android.system.Os
 import android.util.Log
 import android.util.Range
 import android.view.Surface
+import java.io.FileDescriptor
+import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -55,6 +58,7 @@ class RecordService : Service() {
         private const val VIDEO_FPS = 30
         private const val MIC_POLL_INTERVAL_MS = 5000L
         private const val LOCATION_PREFS = "qr_locations"
+        private const val QT_EPOCH_OFFSET_SECONDS = 2082844800L // 1904-01-01 to 1970-01-01
     }
 
     private var mode: Mode? = null
@@ -66,6 +70,7 @@ class RecordService : Service() {
     private var handlerThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
     private var sensorOrientation = 90
+    private var segmentStartMs = 0L
 
     @Volatile private var switchingSegments = false
 
@@ -175,7 +180,6 @@ class RecordService : Service() {
                 }
                 return
             }
-            // Read how the sensor is physically mounted, for the rotation hint.
             val chars = cm.getCameraCharacteristics(cameraId)
             sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
             Log.i(Constants.TAG, "Opening camera $cameraId, sensorOrientation=$sensorOrientation")
@@ -258,8 +262,6 @@ class RecordService : Service() {
             recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
             recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             recorder.setOutputFile(uriPfd.second.fileDescriptor)
-            // Rotation hint so players show the video upright when the phone
-            // is held vertically.
             recorder.setOrientationHint(sensorOrientation)
             if (withAudio) {
                 recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
@@ -373,6 +375,7 @@ class RecordService : Service() {
                 .ifEmpty { Constants.DEFAULT_FOLDER }
             val name = if (video) "VID_${stamp}.mp4" else "AUD_${stamp}.m4a"
             val now = System.currentTimeMillis()
+            segmentStartMs = now
             val values = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, name)
                 put(
@@ -384,7 +387,6 @@ class RecordService : Service() {
                     Environment.DIRECTORY_MOVIES + "/" + folder
                 )
                 put(MediaStore.Video.Media.IS_PENDING, 1)
-                // Explicit timestamps so every gallery agrees on the date.
                 put(MediaStore.Video.Media.DATE_TAKEN, now)
                 put(MediaStore.Video.Media.DATE_ADDED, now / 1000)
                 put(MediaStore.Video.Media.DATE_MODIFIED, now / 1000)
@@ -431,6 +433,108 @@ class RecordService : Service() {
             }
         } catch (e: Exception) {
             Log.w(Constants.TAG, "Location capture skipped: ${e.message}")
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // MP4 embedded timestamp correction
+    //
+    // MediaRecorder writes the mvhd/tkhd creation times as local time
+    // while labelling them UTC, shifting them by the timezone offset for
+    // spec-compliant readers like Aves. This rewrites those atoms with the
+    // true UTC time so every reader sees the same, correct date.
+    // ------------------------------------------------------------------
+
+    private fun patchMp4Timestamps(uri: Uri, epochMs: Long) {
+        if (epochMs <= 0) return
+        try {
+            val pfd = contentResolver.openFileDescriptor(uri, "rw") ?: return
+            pfd.use {
+                val fd = pfd.fileDescriptor
+                val size = pfd.statSize
+                if (size <= 0) return
+                val qtSec = epochMs / 1000 + QT_EPOCH_OFFSET_SECONDS
+                val patched = walkBoxes(fd, 0, size, qtSec)
+                Log.i(Constants.TAG, "MP4 timestamps corrected: $patched boxes")
+            }
+        } catch (e: Exception) {
+            Log.w(Constants.TAG, "MP4 timestamp patch failed: ${e.message}")
+        }
+    }
+
+    /** Walks top-level boxes and descends only into moov/trak. */
+    private fun walkBoxes(
+        fd: FileDescriptor,
+        start: Long,
+        end: Long,
+        qtSec: Long
+    ): Int {
+        var offset = start
+        var patched = 0
+        while (offset + 8 <= end) {
+            val header = ByteBuffer.allocate(8)
+            Os.pread(fd, header, offset)
+            header.flip()
+            var boxSize = header.int.toLong() and 0xFFFFFFFFL
+            val typeBytes = ByteArray(4)
+            header.get(typeBytes)
+            val type = String(typeBytes, Charsets.US_ASCII)
+            var headerLen = 8L
+            if (boxSize == 1L) {
+                val ext = ByteBuffer.allocate(8)
+                Os.pread(fd, ext, offset + 8)
+                ext.flip()
+                boxSize = ext.long
+                headerLen = 16L
+            } else if (boxSize == 0L) {
+                boxSize = end - offset
+            }
+            if (boxSize < headerLen || offset + boxSize > end) break
+            when (type) {
+                "moov", "trak" ->
+                    patched += walkBoxes(fd, offset + headerLen, offset + boxSize, qtSec)
+                "mvhd", "tkhd" ->
+                    patched += patchBoxTimes(fd, offset + headerLen, qtSec)
+            }
+            offset += boxSize
+        }
+        return patched
+    }
+
+    /** Rewrites creation/modification time in one versioned full box. */
+    private fun patchBoxTimes(fd: FileDescriptor, payloadStart: Long, qtSec: Long): Int {
+        return try {
+            val verBuf = ByteBuffer.allocate(4)
+            Os.pread(fd, verBuf, payloadStart)
+            verBuf.flip()
+            val version = verBuf.get().toInt()
+            if (version == 0) {
+                // version(1) + flags(3), then two 32-bit times.
+                val old = ByteBuffer.allocate(4)
+                Os.pread(fd, old, payloadStart + 4)
+                old.flip()
+                Log.i(
+                    Constants.TAG,
+                    "Fixing box time: was ${old.int} (${old.int - QT_EPOCH_OFFSET_SECONDS}s since epoch), now ${qtSec - QT_EPOCH_OFFSET_SECONDS}s since epoch"
+                )
+                val buf = ByteBuffer.allocate(8)
+                buf.putInt(qtSec.toInt())
+                buf.putInt(qtSec.toInt())
+                buf.flip()
+                Os.pwrite(fd, buf, payloadStart + 4)
+                1
+            } else {
+                // Version 1: two 64-bit times after the 4-byte version/flags.
+                val buf = ByteBuffer.allocate(16)
+                buf.putLong(qtSec)
+                buf.putLong(qtSec)
+                buf.flip()
+                Os.pwrite(fd, buf, payloadStart + 4)
+                1
+            }
+        } catch (e: Exception) {
+            Log.w(Constants.TAG, "patchBoxTimes failed: ${e.message}")
+            0
         }
     }
 
@@ -676,6 +780,10 @@ class RecordService : Service() {
         outputPfd = null
 
         outputUri?.let { uri ->
+            // Correct the embedded MP4 timestamps to true UTC while the file
+            // is still pending, before any other app ever sees it.
+            patchMp4Timestamps(uri, segmentStartMs)
+            segmentStartMs = 0L
             try {
                 val values = ContentValues().apply {
                     put(MediaStore.Video.Media.IS_PENDING, 0)
