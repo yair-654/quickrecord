@@ -8,21 +8,25 @@ import android.app.Service
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.net.Uri
-import android.os.Handler
-import android.os.HandlerThread
-import android.os.IBinder
-import android.os.SystemClock
-import android.provider.MediaStore
-import android.util.Log
-import android.view.Surface
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.media.MediaRecorder
+import android.net.Uri
+import android.os.Environment
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.IBinder
+import android.os.ParcelFileDescriptor
+import android.os.SystemClock
+import android.provider.MediaStore
+import android.util.Log
+import android.util.Range
+import android.view.Surface
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -43,8 +47,10 @@ class RecordService : Service() {
     private var captureSession: CameraCaptureSession? = null
     private var mediaRecorder: MediaRecorder? = null
     private var outputUri: Uri? = null
+    private var outputPfd: ParcelFileDescriptor? = null
     private var handlerThread: HandlerThread? = null
     private var handler: Handler? = null
+
     @Volatile private var isRecording = false
 
     // ------------------------------------------------------------------
@@ -66,7 +72,9 @@ class RecordService : Service() {
                     return START_NOT_STICKY
                 }
                 Log.i(Constants.TAG, "Start requested")
-                startAsForeground()
+                if (!startAsForeground()) {
+                    return START_NOT_STICKY
+                }
                 startRecordingInternal()
                 return START_NOT_STICKY
             }
@@ -87,44 +95,72 @@ class RecordService : Service() {
     // Foreground setup
     // ------------------------------------------------------------------
 
-    private fun startAsForeground() {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            getString(R.string.notif_channel_name),
-            NotificationManager.IMPORTANCE_LOW
-        )
-        nm.createNotificationChannel(channel)
+    /**
+     * Returns true if the service reached foreground state, false if the
+     * system refused. Refusal reasons are recorded in Constants.lastError.
+     */
+    private fun startAsForeground(): Boolean {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                getString(R.string.notif_channel_name),
+                NotificationManager.IMPORTANCE_LOW
+            )
+            nm.createNotificationChannel(channel)
 
-        if (android.os.Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            Log.w(Constants.TAG, "POST_NOTIFICATIONS not granted; notification may not show")
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.w(Constants.TAG, "POST_NOTIFICATIONS not granted; notification may not show")
+            }
+
+            val stopIntent = Intent(this, RecordService::class.java).apply {
+                action = ACTION_STOP
+            }
+            val stopPi = PendingIntent.getService(
+                this, 1, stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val notification = Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle(getString(R.string.notif_recording_title))
+                .setContentText(getString(R.string.notif_recording_text))
+                .setSmallIcon(R.drawable.ic_tile)
+                .addAction(
+                    Notification.Action.Builder(
+                        null,
+                        getString(R.string.notif_action_stop),
+                        stopPi
+                    ).build()
+                )
+                .setOngoing(true)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .setUsesChronometer(true)
+                .setWhen(System.currentTimeMillis())
+                .build()
+
+            // Android 14+ validates the FGS types against the manifest and
+            // against the app's current while-in-use state. If this throws,
+            // the message tells us exactly which rule rejected us.
+            startForeground(
+                NOTIF_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            )
+            Log.i(Constants.TAG, "Foreground started with camera|microphone types")
+            return true
+
+        } catch (e: SecurityException) {
+            fail("startForeground SecurityException: ${e.javaClass.simpleName}: " +
+                 "${e.message}. The system refused the camera/microphone foreground " +
+                 "service type, usually because the app lacked while-in-use access.")
+            return false
+        } catch (e: Exception) {
+            fail("startForeground threw: ${e.javaClass.simpleName}: ${e.message}")
+            return false
         }
-
-        val stopIntent = Intent(this, RecordService::class.java).apply { action = ACTION_STOP }
-        val stopPi = PendingIntent.getService(
-            this, 1, stopIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val notification = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.notif_recording_title))
-            .setContentText(getString(R.string.notif_recording_text))
-            .setSmallIcon(R.drawable.ic_tile)
-            .addAction(Notification.Action.Builder(null, getString(R.string.notif_action_stop), stopPi).build())
-            .setOngoing(true)
-            .setCategory(Notification.CATEGORY_SERVICE)
-            .setUsesChronometer(true)
-            .setWhen(System.currentTimeMillis())
-            .build()
-
-        // Both FGS types declared at once; Android 14+ requires the types to
-        // match the manifest declaration of camera|microphone.
-        startForeground(NOTIF_ID, notification,
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
     }
 
     // ------------------------------------------------------------------
@@ -132,11 +168,10 @@ class RecordService : Service() {
     // ------------------------------------------------------------------
 
     private fun startRecordingInternal() {
-        // Permission gate. Without these nothing downstream can work.
         if (checkSelfPermission(android.Manifest.permission.CAMERA) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            PackageManager.PERMISSION_GRANTED ||
             checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED
+            PackageManager.PERMISSION_GRANTED
         ) {
             fail("Camera or microphone permission missing. Open the app once and grant both.")
             return
@@ -153,24 +188,23 @@ class RecordService : Service() {
                 return
             }
             Log.i(Constants.TAG, "Opening camera $cameraId")
-            // This call throws if Android refuses camera use from the current
-            // process state (the while-in-use restriction). We catch and report.
             cm.openCamera(cameraId, cameraStateCallback, handler)
-        } catch (e: Exception) {
-            fail("openCamera threw: ${e.javaClass.simpleName}: ${e.message}. " +
-                 "This usually means the while-in-use restriction blocked camera " +
-                 "access because no activity of ours was visible.")
         } catch (e: SecurityException) {
-            fail("openCamera SecurityException: ${e.message}")
+            fail("openCamera SecurityException: ${e.message}. The while-in-use " +
+                 "restriction likely blocked camera access because no activity " +
+                 "of ours was visible.")
+        } catch (e: Exception) {
+            fail("openCamera threw: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
     private fun pickBackCamera(cm: CameraManager): String? {
         for (id in cm.cameraIdList) {
             val chars = cm.getCameraCharacteristics(id)
-            if (chars.get(CameraCharacteristics.LENS_FACING) ==
-                CameraCharacteristics.LENS_FACING_BACK
-            ) return id
+            val facing = chars.get(CameraCharacteristics.LENS_FACING)
+            if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK) {
+                return id
+            }
         }
         return null
     }
@@ -184,16 +218,16 @@ class RecordService : Service() {
 
         override fun onDisconnected(camera: CameraDevice) {
             Log.e(Constants.TAG, "Camera disconnected")
-            fail("Camera disconnected during setup.")
             camera.close()
+            fail("Camera disconnected during setup.")
         }
 
         override fun onError(camera: CameraDevice, error: Int) {
             Log.e(Constants.TAG, "Camera error code $error")
             camera.close()
             fail("Camera onError code $error (1=ERROR_CAMERA_IN_USE, " +
-                 "2=MAX_CAMERAS_IN_USE, 3=DISABLED, 4=DEVICE, " +
-                 "5=INVALID_OPERATION, 6=callback error)")
+                 "2=MAX_CAMERAS_IN_USE, 3=ERROR_CAMERA_DISABLED, " +
+                 "4=ERROR_CAMERA_DEVICE, 5=ERROR_CAMERA_SERVICE)")
         }
     }
 
@@ -201,39 +235,43 @@ class RecordService : Service() {
         try {
             val resolver = applicationContext.contentResolver
 
-            // Build the MediaStore target file first, so a failure here is
-            // reported before we touch the camera further.
             val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
             val values = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, "VID_${stamp}.mp4")
                 put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                put(MediaStore.Video.Media.RELATIVE_PATH,
-                    android.os.Environment.DIRECTORY_MOVIES)
+                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES)
                 put(MediaStore.Video.Media.IS_PENDING, 1)
             }
-            outputUri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-            if (outputUri == null) {
+            val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+            if (uri == null) {
                 fail("MediaStore insert returned null; cannot create output file.")
                 return
             }
+            outputUri = uri
 
-            @Suppress("DEPRECATION")
-            mediaRecorder = MediaRecorder().apply {
-                setAudioSource(MediaRecorder.AudioSource.MIC)
-                setVideoSource(MediaRecorder.VideoSource.SURFACE)
-                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                setOutputFile(resolver.openFileDescriptor(outputUri!!, "rw")!!.fileDescriptor)
-                setVideoEncodingBitRate(8_000_000)
-                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                setAudioEncodingBitRate(128_000)
-                setAudioSamplingRate(44_100)
-                setVideoSize(VIDEO_WIDTH, VIDEO_HEIGHT)
-                setVideoFrameRate(VIDEO_FPS)
-                prepare()
+            val pfd = resolver.openFileDescriptor(uri, "rw")
+            if (pfd == null) {
+                fail("Could not open a writable descriptor for $uri")
+                return
             }
+            outputPfd = pfd
 
-            val surface: Surface = mediaRecorder!!.surface
+            val recorder = MediaRecorder(this)
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setOutputFile(pfd.fileDescriptor)
+            recorder.setVideoEncodingBitRate(8_000_000)
+            recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioEncodingBitRate(128_000)
+            recorder.setAudioSamplingRate(44_100)
+            recorder.setVideoSize(VIDEO_WIDTH, VIDEO_HEIGHT)
+            recorder.setVideoFrameRate(VIDEO_FPS)
+            recorder.prepare()
+            mediaRecorder = recorder
+
+            val surface: Surface = recorder.surface
             camera.createCaptureSession(
                 listOf(surface),
                 object : CameraCaptureSession.StateCallback() {
@@ -245,8 +283,8 @@ class RecordService : Service() {
                     override fun onConfigureFailed(session: CameraCaptureSession) {
                         session.close()
                         fail("Capture session configuration failed. The requested " +
-                             "${VIDEO_WIDTH}x${VIDEO_HEIGHT}@${VIDEO_FPS} combination may " +
-                             "be unsupported on this camera.")
+                             "${VIDEO_WIDTH}x${VIDEO_HEIGHT}@${VIDEO_FPS} combination " +
+                             "may be unsupported on this camera.")
                     }
                 },
                 handler
@@ -264,20 +302,16 @@ class RecordService : Service() {
         try {
             val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                 addTarget(surface)
-                set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                    intArrayOf(VIDEO_FPS, VIDEO_FPS))
+                set(
+                    CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                    Range(VIDEO_FPS, VIDEO_FPS)
+                )
             }
             session.setRepeatingRequest(request.build(), null, handler)
 
-            @Suppress("DEPRECATION")
             mediaRecorder!!.start()
-
             isRecording = true
             Log.i(Constants.TAG, "Recording started to $outputUri")
-
-            // Mark the MediaStore entry complete so galleries pick it up.
-            // IS_PENDING is cleared after stop, not here; keep it pending so a
-            // crashed recording leaves no corrupt playable-looking file.
         } catch (e: Exception) {
             fail("mediaRecorder.start threw: ${e.javaClass.simpleName}: ${e.message}")
         }
@@ -289,25 +323,33 @@ class RecordService : Service() {
 
     private fun stopEverything() {
         isRecording = false
+
         try {
             captureSession?.close()
         } catch (e: Exception) {
             Log.w(Constants.TAG, "session close: ${e.message}")
         }
         captureSession = null
+
         try {
-            @Suppress("DEPRECATION")
             mediaRecorder?.stop()
         } catch (e: Exception) {
             Log.w(Constants.TAG, "recorder stop: ${e.message}")
         }
         try {
-            @Suppress("DEPRECATION")
             mediaRecorder?.release()
         } catch (e: Exception) {
             Log.w(Constants.TAG, "recorder release: ${e.message}")
         }
         mediaRecorder = null
+
+        try {
+            outputPfd?.close()
+        } catch (e: Exception) {
+            Log.w(Constants.TAG, "pfd close: ${e.message}")
+        }
+        outputPfd = null
+
         try {
             cameraDevice?.close()
         } catch (e: Exception) {
@@ -315,7 +357,8 @@ class RecordService : Service() {
         }
         cameraDevice = null
 
-        // Mark the output file final in MediaStore.
+        // Flip the MediaStore entry to visible only after a clean stop, so an
+        // interrupted recording never appears as a playable file.
         outputUri?.let { uri ->
             try {
                 val values = ContentValues().apply {
@@ -333,11 +376,15 @@ class RecordService : Service() {
         handlerThread = null
         handler = null
 
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (e: Exception) {
+            Log.w(Constants.TAG, "stopForeground: ${e.message}")
+        }
         stopSelf()
     }
 
-    /** Records the failure for MainActivity display, logs it, and shuts down. */
+    /** Records the failure for MainActivity, logs it, and shuts down. */
     private fun fail(message: String) {
         Log.e(Constants.TAG, "FAIL: $message")
         Constants.lastError = message
