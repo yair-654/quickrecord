@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Camera body: rounded rectangle, centered in the 66dp safe zone -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,46 h20 a4,4 0 0 1 4,4 v8 a4,4 0 0 1 -4,4 h-20 a4,4 0 0 1 -4,-4 v-8 a4,4 0 0 1 4,-4 z" />
+
+    <!-- Lens triangle pointing left, suggesting a video camera -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M64,49 l8,-5 v16 l-8,-5 z" />
+
+    <!-- Red recording dot -->
+    <path
+        android:fillColor="#FF3B30"
+        android:pathData="M42,54 a3,3 0 1 0 6,0 a3,3 0 1 0 -6,0 z" />
+</vector>
