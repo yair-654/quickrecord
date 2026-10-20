@@ -42,6 +42,7 @@ import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 class RecordService : Service() {
 
@@ -71,6 +72,7 @@ class RecordService : Service() {
     private var cameraHandler: Handler? = null
     private var sensorOrientation = 90
     private var segmentStartMs = 0L
+    private var zoneOffsetSec = 0L
 
     @Volatile private var switchingSegments = false
 
@@ -439,10 +441,14 @@ class RecordService : Service() {
     // ------------------------------------------------------------------
     // MP4 embedded timestamp correction
     //
-    // MediaRecorder writes the mvhd/tkhd creation times as local time
-    // while labelling them UTC, shifting them by the timezone offset for
-    // spec-compliant readers like Aves. This rewrites those atoms with the
-    // true UTC time so every reader sees the same, correct date.
+    // Some Android MediaRecorder builds write the mvhd/tkhd creation times
+    // as local time while labelling them UTC, shifting them by the
+    // timezone offset for spec-compliant readers. This inspects the
+    // existing values and corrects them to true UTC only when the
+    // discrepancy is exactly a timezone offset. Correct values and anything
+    // unexpected are left untouched. Runs while the file is still pending,
+    // before any other app can see it. Video and audio data are not
+    // modified, only the container header timestamps.
     // ------------------------------------------------------------------
 
     private fun patchMp4Timestamps(uri: Uri, epochMs: Long) {
@@ -453,9 +459,10 @@ class RecordService : Service() {
                 val fd = pfd.fileDescriptor
                 val size = pfd.statSize
                 if (size <= 0) return
+                zoneOffsetSec = TimeZone.getDefault().getOffset(epochMs) / 1000L
                 val qtSec = epochMs / 1000 + QT_EPOCH_OFFSET_SECONDS
                 val patched = walkBoxes(fd, 0, size, qtSec)
-                Log.i(Constants.TAG, "MP4 timestamps corrected: $patched boxes")
+                Log.i(Constants.TAG, "MP4 timestamp check complete: $patched boxes corrected")
             }
         } catch (e: Exception) {
             Log.w(Constants.TAG, "MP4 timestamp patch failed: ${e.message}")
@@ -501,7 +508,10 @@ class RecordService : Service() {
         return patched
     }
 
-    /** Rewrites creation/modification time in one versioned full box. */
+    /**
+     * Corrects creation/modification time in one versioned full box, but
+     * only if the stored value is wrong by exactly a timezone offset.
+     */
     private fun patchBoxTimes(fd: FileDescriptor, payloadStart: Long, qtSec: Long): Int {
         return try {
             val verBuf = ByteBuffer.allocate(4)
@@ -509,28 +519,54 @@ class RecordService : Service() {
             verBuf.flip()
             val version = verBuf.get().toInt()
             if (version == 0) {
-                // version(1) + flags(3), then two 32-bit times.
                 val old = ByteBuffer.allocate(4)
                 Os.pread(fd, old, payloadStart + 4)
                 old.flip()
-                Log.i(
-                    Constants.TAG,
-                    "Fixing box time: was ${old.int} (${old.int - QT_EPOCH_OFFSET_SECONDS}s since epoch), now ${qtSec - QT_EPOCH_OFFSET_SECONDS}s since epoch"
-                )
-                val buf = ByteBuffer.allocate(8)
-                buf.putInt(qtSec.toInt())
-                buf.putInt(qtSec.toInt())
-                buf.flip()
-                Os.pwrite(fd, buf, payloadStart + 4)
-                1
+                val was = old.int.toLong() and 0xFFFFFFFFL
+                val delta = was - qtSec
+                when {
+                    kotlin.math.abs(delta) <= 5L -> {
+                        Log.i(Constants.TAG, "Box time already correct ($was), left alone")
+                        0
+                    }
+                    kotlin.math.abs(delta - zoneOffsetSec) <= 600L -> {
+                        Log.i(
+                            Constants.TAG,
+                            "Box time was local-labelled-UTC ($was), correcting to $qtSec"
+                        )
+                        val buf = ByteBuffer.allocate(8)
+                        buf.putInt(qtSec.toInt())
+                        buf.putInt(qtSec.toInt())
+                        buf.flip()
+                        Os.pwrite(fd, buf, payloadStart + 4)
+                        1
+                    }
+                    else -> {
+                        Log.w(
+                            Constants.TAG,
+                            "Box time delta $delta is neither zero nor a zone offset; left alone"
+                        )
+                        0
+                    }
+                }
             } else {
-                // Version 1: two 64-bit times after the 4-byte version/flags.
-                val buf = ByteBuffer.allocate(16)
-                buf.putLong(qtSec)
-                buf.putLong(qtSec)
-                buf.flip()
-                Os.pwrite(fd, buf, payloadStart + 4)
-                1
+                val old = ByteBuffer.allocate(8)
+                Os.pread(fd, old, payloadStart + 4)
+                old.flip()
+                val was = old.long
+                val delta = was - qtSec
+                if (kotlin.math.abs(delta - zoneOffsetSec) <= 600L) {
+                    Log.i(Constants.TAG, "Box time (v1) correcting $was to $qtSec")
+                    val buf = ByteBuffer.allocate(16)
+                    buf.putLong(qtSec)
+                    buf.putLong(qtSec)
+                    buf.flip()
+                    Os.pwrite(fd, buf, payloadStart + 4)
+                    1
+                } else {
+                    Log.i(Constants.TAG, "Box time (v1) already acceptable ($was), left alone")
+                    0
+                }
             }
         } catch (e: Exception) {
             Log.w(Constants.TAG, "patchBoxTimes failed: ${e.message}")
@@ -780,8 +816,8 @@ class RecordService : Service() {
         outputPfd = null
 
         outputUri?.let { uri ->
-            // Correct the embedded MP4 timestamps to true UTC while the file
-            // is still pending, before any other app ever sees it.
+            // Correct the embedded MP4 timestamps while the file is still
+            // pending, before any other app ever sees it.
             patchMp4Timestamps(uri, segmentStartMs)
             segmentStartMs = 0L
             try {
