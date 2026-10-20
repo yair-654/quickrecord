@@ -2,14 +2,11 @@ package com.israel.quickrecord
 
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.drawable.Icon
 import android.os.SystemClock
-import android.os.VibrationEffect
-import android.os.VibratorManager
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.util.Log
@@ -17,25 +14,19 @@ import android.util.Log
 /**
  * The Quick Settings tile.
  *
- * onClick() never calls unlockAndRun(): tapping on a locked phone must not
- * ask for credentials.
+ * onClick() never calls unlockAndRun().
  *
- * Tile state refreshes instantly: the service broadcasts every state change
- * and this class listens while it is on screen. The service additionally
- * calls requestListeningState() so the tile wakes even when not listening.
+ * On tap-to-start the tile marks itself active optimistically, because the
+ * camera takes a moment to open and refreshing "too early" would show
+ * inactive. The service confirms the real state via broadcast, and the tile
+ * also re-reads state whenever SystemUI asks it to listen.
  */
 class QRTileService : TileService() {
 
     companion object {
         private const val VARIANT_PENDING_INTENT = 0
         private const val VARIANT_INTENT = 1
-
-        /**
-         * Which startActivityAndCollapse overload the tile uses.
-         * Change this, rebuild, reinstall, and test the other one.
-         */
         private const val START_VARIANT = VARIANT_PENDING_INTENT
-
         private const val REQ_CODE_ACTIVITY = 101
     }
 
@@ -84,30 +75,17 @@ class QRTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
-        hapticTick()
         Log.i(Constants.TAG, "Tile clicked. isRecording=${Constants.isRecording}")
 
         if (Constants.isRecording) {
+            // Optimistic inactive: the stop is near-instant.
+            setTileState(active = false)
             requestStop()
         } else {
+            // Optimistic active: camera open takes a moment, the service
+            // broadcast will confirm or correct this shortly.
+            setTileState(active = true)
             requestStart()
-        }
-        refreshTile()
-    }
-
-    // ------------------------------------------------------------------
-    // Haptics
-    // ------------------------------------------------------------------
-
-    private fun hapticTick() {
-        try {
-            val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-            val vib = vm.defaultVibrator
-            if (vib.hasVibrator()) {
-                vib.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK))
-            }
-        } catch (e: Exception) {
-            Log.w(Constants.TAG, "Haptic failed: ${e.message}")
         }
     }
 
@@ -148,10 +126,6 @@ class QRTileService : TileService() {
         }
     }
 
-    /**
-     * The deprecated Intent overload, invoked by reflection so the project
-     * compiles even if API 37 removed the method from the public stubs.
-     */
     private fun collapseWithIntentOverload(activityIntent: Intent) {
         try {
             val method = TileService::class.java.getMethod(
@@ -204,11 +178,6 @@ class QRTileService : TileService() {
     // Stop
     // ------------------------------------------------------------------
 
-    /**
-     * startService, not startForegroundService: the service is already in the
-     * foreground state, so startService is permitted, and it avoids imposing
-     * the five-second startForeground deadline on a stop request.
-     */
     private fun requestStop() {
         try {
             val serviceIntent = Intent(this, RecordService::class.java).apply {
@@ -225,13 +194,16 @@ class QRTileService : TileService() {
     // Tile appearance and diagnostics
     // ------------------------------------------------------------------
 
-    private fun refreshTile() {
+    private fun setTileState(active: Boolean) {
         val tile = qsTile ?: return
-        tile.state = if (Constants.isRecording) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+        tile.state = if (active) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.label = getString(R.string.tile_label)
         tile.icon = Icon.createWithResource(this, R.drawable.ic_tile)
         tile.updateTile()
-        Log.i(Constants.TAG, "Tile refreshed to state=${tile.state}")
+    }
+
+    private fun refreshTile() {
+        setTileState(Constants.isRecording)
     }
 
     private fun recordFailure(message: String) {
