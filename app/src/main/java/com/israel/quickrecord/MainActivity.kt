@@ -46,7 +46,7 @@ class MainActivity : Activity() {
         }
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(p(16), p(40), p(16), p(32))
+            setPadding(p(16), p(64), p(16), p(32))
         }
 
         val statusCard = makeCard(getString(R.string.status_header))
