@@ -33,6 +33,9 @@ Actions tab, open the latest run, download `QuickRecord-debug-apk`, unzip, insta
 - `Constants.kt` holds `USE_ACTIVITY_PATH`: the switch between the primary path (activity over lock screen) and the fallback path (tile starts the service directly). Change requires rebuild.
 - `QRTileService.kt` holds `START_VARIANT`: the switch between the PendingIntent and deprecated Intent variants of `startActivityAndCollapse`.
 - Failures anywhere in the recording pipeline are logged under the tag `QuickRecord` and shown in MainActivity under "Last error".
+---
+
+Proudly made in Israel 🇮🇱
 
 ## License
 
