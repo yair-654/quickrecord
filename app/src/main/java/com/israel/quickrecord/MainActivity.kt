@@ -468,7 +468,7 @@ class MainActivity : Activity() {
         }
 
         val loc = try {
-            getSharedPreferences(Constants.LOCATION_PREFS, MODE_PRIVATE)
+            getSharedPreferences("qr_locations", MODE_PRIVATE)
                 .getString(item.name, null)
         } catch (e: Exception) {
             null
@@ -493,7 +493,7 @@ class MainActivity : Activity() {
 
         folderField = EditText(this).apply {
             setText(currentFolder())
-            singleLine = true
+            maxLines = 1             inputType = android.text.InputType.TYPE_CLASS_TEXT
             setTextColor(getColor(R.color.text_primary))
             setHintTextColor(getColor(R.color.text_secondary))
             setBackgroundColor(getColor(R.color.bg_input))
