@@ -31,7 +31,15 @@ jobs:
         with:
           gradle-version: '9.6.0'
 
+      - name: Decode signing keystore
+        run: echo "${{ secrets.QR_KEYSTORE_BASE64 }}" | base64 -d > $RUNNER_TEMP/quickrecord.keystore          
+
       - name: Build debug APK
+        env:
+          QR_KEYSTORE_FILE: ${{ runner.temp }}/quickrecord.keystore
+          QR_KEYSTORE_PASSWORD: ${{ secrets.QR_KEYSTORE_PASSWORD }}
+          QR_KEY_ALIAS: ${{ secrets.QR_KEY_ALIAS }}
+          QR_KEY_PASSWORD: ${{ secrets.QR_KEY_PASSWORD }}
         run: gradle :app:assembleDebug --no-daemon --stacktrace
 
       - name: Rename APK with version
