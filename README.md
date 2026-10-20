@@ -1,42 +1,56 @@
 # QuickRecord
 
-A minimal Android app that starts a video recording instantly from a Quick Settings tile, including while the phone is locked. No preview, no buttons, no unlock prompt.
+Instant video recording from a Quick Settings tile, straight from the lock screen. One tap to start, one tap to stop and save.
 
-Built for personal use on GrapheneOS. No internet permission, no ads, no analytics, no accounts, no external dependencies. Pure Android framework APIs.
+Built for GrapheneOS and modern Android. Pure Android framework APIs: no internet permission, no dependencies, no analytics, no accounts.
 
-## How it works
+## Features (v1.1)
 
-- Tap the tile: starts recording immediately (back camera, mic, 1080p 30fps H.264/AAC).
-- Tap again: stops and saves to Movies as VID_YYYYMMDD_HHMMSS.mp4.
-- While locked, the tile launches a transparent show-when-locked activity (the same mechanism alarm clocks use), which starts a foreground service that owns the camera. Recording survives screen-off and app switching.
-- Persistent notification with a Stop action while recording.
+- **Instant start:** Quick Settings tile taps, no unlock prompt, works while locked.
+- **Modern dark UI:** Clean, contemporary look with material-style cards.
+- **Recording modes:** Full video+audio, video-only (mic unavailable), audio-only (camera unavailable). Falls back gracefully when permissions are system-wide toggled off.
+- **Segmented recording:** When a disabled component becomes available mid-session, recording continues in a new segment seamlessly.
+- **Battery guard:** Stops automatically at 5% to prevent corrupted files on power loss.
+- **File browser:** See all recordings made by this app with full details (duration, size, resolution, bitrate, location sidecar data). Tap any file to view complete metadata.
+- **Custom folder:** Choose where recordings save under Movies/. Default: Movies/QuickRecord.
+- **Silent notifications:** Low-importance notification with Stop action, never loud.
+- **Haptic feedback:** Click feedback on tile press (where vibrator available).
+- **Location simple-tier:** Geodata captured at recording start and stored for each file.
 
 ## Requirements
 
-- Android 14+ (API 34). Developed and tested on Android 17 (API 37), GrapheneOS.
-- One-time setup: open the app, grant camera, microphone, and notification permissions, then add the QuickRecord tile to your Quick Settings panel.
+- Android 14+ (API 34). Tested on Android 17 (API 37), GrapheneOS.
+- One-time setup: open the app, grant camera, microphone, notification, location, and files permissions, then add the QuickRecord tile to your Quick Settings panel.
+- Long-press the tile to open this app.
 
 ## Permissions
 
-CAMERA, RECORD_AUDIO, FOREGROUND_SERVICE, FOREGROUND_SERVICE_CAMERA, FOREGROUND_SERVICE_MICROPHONE, POST_NOTIFICATIONS.
-
-The app has no INTERNET permission, so the OS refuses to open any network socket for it.
+- CAMERA, RECORD_AUDIO, FOREGROUND_SERVICE, FOREGROUND_SERVICE_CAMERA, FOREGROUND_SERVICE_MICROPHONE, POST_NOTIFICATIONS
+- ACCESS_COARSE_LOCATION, ACCESS_FINE_LOCATION (simple-tier geodata)
+- READ_MEDIA_VIDEO, READ_EXTERNAL_STORAGE (file browser)
+- VIBRATE (haptics, auto-granted, normal permission)
+- **NO INTERNET permission** — the kernel refuses to create any socket for this app.
 
 ## Building
 
-The repo has no Gradle wrapper and no local build environment is needed. Commits to `main` trigger GitHub Actions, which builds a debug APK and publishes it as a workflow artifact:
+The repo has no Gradle wrapper. Commits to `main` trigger GitHub Actions, which builds a debug APK and publishes it as a workflow artifact:
 
 Actions tab, open the latest run, download `QuickRecord-debug-apk`, unzip, install the APK on the device.
 
+Tagging `v1.1` (or any `v*`) creates a GitHub Release with the APK attached automatically.
+
 ## Architecture notes
 
-- `Constants.kt` holds `USE_ACTIVITY_PATH`: the switch between the primary path (activity over lock screen) and the fallback path (tile starts the service directly). Change requires rebuild.
-- `QRTileService.kt` holds `START_VARIANT`: the switch between the PendingIntent and deprecated Intent variants of `startActivityAndCollapse`.
-- Failures anywhere in the recording pipeline are logged under the tag `QuickRecord` and shown in MainActivity under "Last error".
+- `Constants.kt` holds `USE_ACTIVITY_PATH`: switch between the primary path (activity over lock screen) and the fallback path (tile starts service directly).
+- `QRTileService.kt` holds `START_VARIANT`: PendingIntent vs deprecated Intent variant of `startActivityAndCollapse`.
+- Failures are logged under tag `QuickRecord` and shown in MainActivity under "Last error".
+- Location data is stored in a sidecar file keyed by recording filename.
+
+## Limitations
+
+- Audio-only files are inserted into the MediaStore Video collection (simplified path). Functional; can be improved in v1.2.
+- Mid-session mic/camera toggle detection is polling-based for mic; instantaneous for camera via the availability callback.
+
 ---
 
-Proudly made in Israel 🇮🇱
-
-## License
-
-None. All rights reserved. Personal use.
+🇮🇱 Proudly made in Israel
