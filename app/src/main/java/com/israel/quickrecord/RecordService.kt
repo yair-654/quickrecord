@@ -65,6 +65,7 @@ class RecordService : Service() {
     private var outputPfd: ParcelFileDescriptor? = null
     private var handlerThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
+    private var sensorOrientation = 90
 
     @Volatile private var switchingSegments = false
 
@@ -174,7 +175,10 @@ class RecordService : Service() {
                 }
                 return
             }
-            Log.i(Constants.TAG, "Opening camera $cameraId")
+            // Read how the sensor is physically mounted, for the rotation hint.
+            val chars = cm.getCameraCharacteristics(cameraId)
+            sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+            Log.i(Constants.TAG, "Opening camera $cameraId, sensorOrientation=$sensorOrientation")
             cm.openCamera(cameraId, cameraStateCallback, cameraHandler)
         } catch (e: SecurityException) {
             Log.w(Constants.TAG, "openCamera SecurityException: ${e.message}")
@@ -254,6 +258,9 @@ class RecordService : Service() {
             recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
             recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             recorder.setOutputFile(uriPfd.second.fileDescriptor)
+            // Rotation hint so players show the video upright when the phone
+            // is held vertically.
+            recorder.setOrientationHint(sensorOrientation)
             if (withAudio) {
                 recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 recorder.setAudioEncodingBitRate(128_000)
@@ -365,6 +372,7 @@ class RecordService : Service() {
                 .trim().replace("/", "-")
                 .ifEmpty { Constants.DEFAULT_FOLDER }
             val name = if (video) "VID_${stamp}.mp4" else "AUD_${stamp}.m4a"
+            val now = System.currentTimeMillis()
             val values = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, name)
                 put(
@@ -376,6 +384,10 @@ class RecordService : Service() {
                     Environment.DIRECTORY_MOVIES + "/" + folder
                 )
                 put(MediaStore.Video.Media.IS_PENDING, 1)
+                // Explicit timestamps so every gallery agrees on the date.
+                put(MediaStore.Video.Media.DATE_TAKEN, now)
+                put(MediaStore.Video.Media.DATE_ADDED, now / 1000)
+                put(MediaStore.Video.Media.DATE_MODIFIED, now / 1000)
             }
             val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
                 ?: return null
@@ -592,10 +604,6 @@ class RecordService : Service() {
         wakeTile()
     }
 
-    /**
-     * Wakes the tile even when the Quick Settings panel is closed, so its
-     * highlight reflects reality without the user reopening the panel.
-     */
     private fun wakeTile() {
         try {
             TileService.requestListeningState(
