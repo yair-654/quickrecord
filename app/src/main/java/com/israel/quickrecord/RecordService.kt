@@ -51,8 +51,6 @@ class RecordService : Service() {
     private var handlerThread: HandlerThread? = null
     private var handler: Handler? = null
 
-    @Volatile private var isRecording = false
-
     // ------------------------------------------------------------------
     // Lifecycle
     // ------------------------------------------------------------------
@@ -67,7 +65,7 @@ class RecordService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_START -> {
-                if (isRecording) {
+                if (Constants.isRecording) {
                     Log.w(Constants.TAG, "Start requested but already recording; ignoring")
                     return START_NOT_STICKY
                 }
@@ -140,9 +138,6 @@ class RecordService : Service() {
                 .setWhen(System.currentTimeMillis())
                 .build()
 
-            // Android 14+ validates the FGS types against the manifest and
-            // against the app's current while-in-use state. If this throws,
-            // the message tells us exactly which rule rejected us.
             startForeground(
                 NOTIF_ID,
                 notification,
@@ -153,9 +148,9 @@ class RecordService : Service() {
             return true
 
         } catch (e: SecurityException) {
-            fail("startForeground SecurityException: ${e.javaClass.simpleName}: " +
-                 "${e.message}. The system refused the camera/microphone foreground " +
-                 "service type, usually because the app lacked while-in-use access.")
+            fail("startForeground SecurityException: ${e.message}. The system refused " +
+                 "the camera/microphone foreground service type, usually because the " +
+                 "app lacked while-in-use access.")
             return false
         } catch (e: Exception) {
             fail("startForeground threw: ${e.javaClass.simpleName}: ${e.message}")
@@ -310,7 +305,7 @@ class RecordService : Service() {
             session.setRepeatingRequest(request.build(), null, handler)
 
             mediaRecorder!!.start()
-            isRecording = true
+            Constants.isRecording = true
             Log.i(Constants.TAG, "Recording started to $outputUri")
         } catch (e: Exception) {
             fail("mediaRecorder.start threw: ${e.javaClass.simpleName}: ${e.message}")
@@ -322,7 +317,7 @@ class RecordService : Service() {
     // ------------------------------------------------------------------
 
     private fun stopEverything() {
-        isRecording = false
+        Constants.isRecording = false
 
         try {
             captureSession?.close()
@@ -357,8 +352,6 @@ class RecordService : Service() {
         }
         cameraDevice = null
 
-        // Flip the MediaStore entry to visible only after a clean stop, so an
-        // interrupted recording never appears as a playable file.
         outputUri?.let { uri ->
             try {
                 val values = ContentValues().apply {
