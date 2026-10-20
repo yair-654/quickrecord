@@ -53,4 +53,4 @@ Tagging `v1.1` (or any `v*`) creates a GitHub Release with the APK attached auto
 
 ---
 
-🇮🇱 Proudly made in Israel
+🇮🇱 Proudly made in Israel 🇮🇱
