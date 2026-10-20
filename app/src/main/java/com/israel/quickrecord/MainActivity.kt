@@ -378,7 +378,7 @@ class MainActivity : Activity() {
         else -> "$bytes B"
     }
 
-    private fun getColor(id: Int): Int = getColor(android.R.attr.textColorPrimary)
+    private fun getColor(id: Int): Int = getResources().getColor(id, theme)
 
     companion object {
         private const val REQ_PERMS = 1
