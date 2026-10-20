@@ -1,12 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns="http://schemas.android.com/apk/res/android">
 
     <!-- ============================================================
          PERMISSIONS
-         Exactly six. Note the deliberate ABSENCE of INTERNET.
-         With no INTERNET permission the OS kernel refuses to create
-         any socket for this app, so exfiltration is impossible even
-         if malicious code existed in the APK.
+         Still no INTERNET permission: the kernel refuses to create
+         any socket for this app, so exfiltration is impossible.
          ============================================================ -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -14,11 +12,29 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
-    <!-- The app is meaningless without a camera, so declare it required. -->
+    <!-- Android 13+: read our own videos from MediaStore for the file browser. -->
+    <uses-permission
+        android:name="android.permission.READ_MEDIA_VIDEO"
+        android:maxSdkVersion="33" />
+
+    <!-- Android 13+: without this, READ_MEDIA_VIDEO grants access to all
+         videos; with it, we see only media we created, which is all we want. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
+    <!-- Pre-Android-13 fallback for the same read access. -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
     <uses-feature
         android:name="android.hardware.camera.any"
         android:required="true" />
+    <uses-feature
+        android:name="android.hardware.location.gps"
+        android:required="false" />
 
     <application
         android:allowBackup="false"
@@ -27,11 +43,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.QuickRecord">
 
-        <!-- ========================================================
-             COMPONENT 1: MainActivity
-             Ordinary launcher entry. Used only for the first-run
-             permission grants and the status/error screen.
-             ======================================================== -->
+        <!-- Launcher: permissions, status, recordings list, settings. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -42,14 +54,21 @@
             </intent-filter>
         </activity>
 
-        <!-- ========================================================
-             COMPONENT 2: RecordActivity
-             The lock-screen bridge. showWhenLocked + turnScreenOn are
-             what let this draw on top of the keyguard WITHOUT the user
-             authenticating, the same mechanism alarm clocks use.
-             Transparent theme so nothing meaningful is displayed.
-             exported=false: only our own tile can launch it.
-             ======================================================== -->
+        <!-- Secondary launcher entry for long-press on the QS tile.
+             SystemUI opens this when the user long-presses the tile and
+             picks "App". Points at the same MainActivity. -->
+        <activity-alias
+            android:name=".TileOpen"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.INFO" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- Lock-screen bridge. -->
         <activity
             android:name=".RecordActivity"
             android:excludeFromRecents="true"
@@ -60,24 +79,13 @@
             android:theme="@style/Theme.QuickRecord.Transparent"
             android:turnScreenOn="true" />
 
-        <!-- ========================================================
-             COMPONENT 3: RecordService
-             Foreground service that owns the camera and recorder.
-             foregroundServiceType camera|microphone is mandatory on
-             Android 14+ or startForeground() throws
-             MissingForegroundServiceTypeException.
-             ======================================================== -->
+        <!-- Foreground service owning camera and recorder. -->
         <service
             android:name=".RecordService"
             android:exported="false"
             android:foregroundServiceType="camera|microphone" />
 
-        <!-- ========================================================
-             COMPONENT 4: QRTileService
-             The Quick Settings tile. BIND_QUICK_SETTINGS_TILE ensures
-             only the system's SystemUI process can bind to it, so no
-             other app can drive your recorder.
-             ======================================================== -->
+        <!-- Quick Settings tile. -->
         <service
             android:name=".QRTileService"
             android:exported="true"
@@ -87,6 +95,9 @@
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.ACTIVE_TILE"
+                android:value="true" />
         </service>
 
     </application>
