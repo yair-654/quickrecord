@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">QuickRecord</string>
+    <string name="tile_label">QuickRecord</string>
+    <string name="notif_channel_name">Recording</string>
+    <string name="notif_recording_title">Recording in progress</string>
+    <string name="notif_recording_text">Tap the tile again or the Stop action to save</string>
+    <string name="notif_action_stop">Stop</string>
+</resources>
