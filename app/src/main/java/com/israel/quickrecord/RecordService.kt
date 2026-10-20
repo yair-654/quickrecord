@@ -6,11 +6,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.hardware.camera2.CameraCaptureSession
@@ -19,11 +19,9 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.location.Location
-import android.location.LocationListener
 import android.location.LocationManager
 import android.media.MediaRecorder
 import android.net.Uri
-import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.HandlerThread
@@ -31,7 +29,10 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.VibratorManager
 import android.provider.MediaStore
+import android.service.quicksettings.TileService
 import android.util.Log
 import android.util.Range
 import android.view.Surface
@@ -70,7 +71,6 @@ class RecordService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var batteryReceiver: BroadcastReceiver? = null
-
     private var cameraAvailabilityCallback: CameraManager.AvailabilityCallback? = null
 
     private val micPollRunnable = object : Runnable {
@@ -137,7 +137,7 @@ class RecordService : Service() {
 
         if (!camPerm && !micPerm) {
             fail("Neither camera nor microphone permission is granted. " +
-                 "Open the app once and grant permissions.")
+                "Open the app once and grant permissions.")
             return
         }
 
@@ -147,8 +147,7 @@ class RecordService : Service() {
             else -> Mode.AUDIO_ONLY
         }
 
-        val fgOk = startAsForeground(chosen)
-        if (!fgOk) return
+        if (!startAsForeground(chosen)) return
 
         when (chosen) {
             Mode.AUDIO_ONLY -> setupAudioOnlyRecording()
@@ -178,8 +177,7 @@ class RecordService : Service() {
             Log.i(Constants.TAG, "Opening camera $cameraId")
             cm.openCamera(cameraId, cameraStateCallback, cameraHandler)
         } catch (e: SecurityException) {
-            Log.w(Constants.TAG, "openCamera SecurityException: ${e.message}; " +
-                 "falling back to audio only")
+            Log.w(Constants.TAG, "openCamera SecurityException: ${e.message}")
             fallbackToAudioOnly("openCamera SecurityException: ${e.message}")
         } catch (e: Exception) {
             fail("openCamera threw: ${e.javaClass.simpleName}: ${e.message}")
@@ -228,6 +226,19 @@ class RecordService : Service() {
         setupAudioOnlyRecording()
     }
 
+    private fun fallbackToVideoOnly(reason: String) {
+        teardownSegment(false)
+        mode = Mode.VIDEO_ONLY
+        Log.w(Constants.TAG, "Falling back to VIDEO_ONLY: $reason")
+        startAsForeground(Mode.VIDEO_ONLY)
+        val cam = cameraDevice
+        if (cam != null) {
+            setupVideoRecording(cam, false)
+        } else {
+            openCameraForVideo(false)
+        }
+    }
+
     // ------------------------------------------------------------------
     // Video recording setup
     // ------------------------------------------------------------------
@@ -255,6 +266,9 @@ class RecordService : Service() {
             recorder.prepare()
 
             mediaRecorder = recorder
+            outputUri = uriPfd.first
+            outputPfd = uriPfd.second
+
             val surface: Surface = recorder.surface
             camera.createCaptureSession(
                 listOf(surface),
@@ -272,8 +286,8 @@ class RecordService : Service() {
                             fallbackToVideoOnly("Capture session config failed with audio.")
                         } else {
                             fail("Capture session configuration failed. " +
-                                 "${VIDEO_WIDTH}x${VIDEO_HEIGHT}@${VIDEO_FPS} may be " +
-                                 "unsupported on this camera.")
+                                "${VIDEO_WIDTH}x${VIDEO_HEIGHT}@${VIDEO_FPS} may be " +
+                                "unsupported on this camera.")
                         }
                     }
                 },
@@ -281,27 +295,12 @@ class RecordService : Service() {
             )
         } catch (e: Exception) {
             if (withAudio) {
-                Log.w(Constants.TAG, "Setup with audio threw: ${e.message}; trying video-only")
+                Log.w(Constants.TAG, "Setup with audio threw: ${e.message}")
                 closeRecorder()
                 fallbackToVideoOnly("Recorder setup threw: ${e.javaClass.simpleName}: ${e.message}")
             } else {
                 fail("Video recorder setup threw: ${e.javaClass.simpleName}: ${e.message}")
             }
-        }
-        // Keep references only if setup survived this far
-        outputUri = uriPfd.first
-        outputPfd = uriPfd.second
-    }
-
-    private fun fallbackToVideoOnly(reason: String) {
-        teardownSegment(false)
-        mode = Mode.VIDEO_ONLY
-        Log.w(Constants.TAG, "Falling back to VIDEO_ONLY: $reason")
-        startAsForeground(Mode.VIDEO_ONLY)
-        if (cameraDevice != null) {
-            setupVideoRecording(cameraDevice!!, false)
-        } else {
-            openCameraForVideo(false)
         }
     }
 
@@ -365,14 +364,13 @@ class RecordService : Service() {
             val folder = (Constants.customFolderOverride ?: Constants.DEFAULT_FOLDER)
                 .trim().replace("/", "-")
                 .ifEmpty { Constants.DEFAULT_FOLDER }
+            val name = if (video) "VID_${stamp}.mp4" else "AUD_${stamp}.m4a"
             val values = ContentValues().apply {
-                if (video) {
-                    put(MediaStore.Video.Media.DISPLAY_NAME, "VID_${stamp}.mp4")
-                    put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                } else {
-                    put(MediaStore.Video.Media.DISPLAY_NAME, "AUD_${stamp}.m4a")
-                    put(MediaStore.Video.Media.MIME_TYPE, "audio/mp4")
-                }
+                put(MediaStore.Video.Media.DISPLAY_NAME, name)
+                put(
+                    MediaStore.Video.Media.MIME_TYPE,
+                    if (video) "video/mp4" else "audio/mp4"
+                )
                 put(
                     MediaStore.Video.Media.RELATIVE_PATH,
                     Environment.DIRECTORY_MOVIES + "/" + folder
@@ -382,7 +380,7 @@ class RecordService : Service() {
             val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
                 ?: return null
             val pfd = resolver.openFileDescriptor(uri, "rw") ?: return null
-            saveLocationSidecar(if (video) "VID_${stamp}.mp4" else "AUD_${stamp}.m4a")
+            saveLocationSidecar(name)
             Pair(uri, pfd)
         } catch (e: Exception) {
             Log.e(Constants.TAG, "createOutputFile threw: ${e.message}")
@@ -390,11 +388,6 @@ class RecordService : Service() {
         }
     }
 
-    /**
-     * Simple-tier location: last known fix at recording start, stored in app
-     * private SharedPreferences keyed by filename. Shown on the details
-     * screen. Silently skipped if location is off or not granted.
-     */
     private fun saveLocationSidecar(displayName: String) {
         try {
             if (checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) !=
@@ -436,18 +429,17 @@ class RecordService : Service() {
     private fun registerCameraAvailability() {
         try {
             val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            cameraAvailabilityCallback =
-                object : CameraManager.AvailabilityCallback() {
-                    override fun onCameraAvailable(cameraId: String) {
-                        if (mode == Mode.AUDIO_ONLY && !switchingSegments &&
-                            checkSelfPermission(android.Manifest.permission.CAMERA) ==
-                            PackageManager.PERMISSION_GRANTED
-                        ) {
-                            Log.i(Constants.TAG, "Camera available again; switching to video")
-                            finishSegmentAndRestart(Mode.FULL)
-                        }
+            cameraAvailabilityCallback = object : CameraManager.AvailabilityCallback() {
+                override fun onCameraAvailable(cameraId: String) {
+                    if (mode == Mode.AUDIO_ONLY && !switchingSegments &&
+                        checkSelfPermission(android.Manifest.permission.CAMERA) ==
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        Log.i(Constants.TAG, "Camera available again; switching to video")
+                        finishSegmentAndRestart(Mode.FULL)
                     }
                 }
+            }
             cm.registerAvailabilityCallback(
                 cameraAvailabilityCallback!!,
                 Handler(Looper.getMainLooper())
@@ -462,7 +454,6 @@ class RecordService : Service() {
         mainHandler.postDelayed(micPollRunnable, MIC_POLL_INTERVAL_MS)
     }
 
-    /** Close current segment cleanly, then open a new one in the given mode. */
     private fun finishSegmentAndRestart(newMode: Mode) {
         if (switchingSegments) return
         switchingSegments = true
@@ -496,11 +487,10 @@ class RecordService : Service() {
                 val percent = level * 100 / scale
                 if (percent <= Constants.BATTERY_THRESHOLD_PERCENT && Constants.isRecording) {
                     Log.w(Constants.TAG, "Battery at $percent%; stopping cleanly")
-                    val notif = getString(
+                    Constants.lastError = getString(
                         R.string.notif_battery_stop,
                         Constants.BATTERY_THRESHOLD_PERCENT
                     )
-                    Constants.lastError = notif
                     Constants.lastErrorTime = SystemClock.elapsedRealtime()
                     stopEverything()
                 }
@@ -583,12 +573,13 @@ class RecordService : Service() {
     }
 
     // ------------------------------------------------------------------
-    // State broadcast
+    // State broadcast and haptics
     // ------------------------------------------------------------------
 
     private fun recordingStarted() {
         Constants.isRecording = true
         broadcastState()
+        hapticTick()
         Log.i(Constants.TAG, "Recording started (${mode?.name}) to $outputUri")
     }
 
@@ -598,6 +589,34 @@ class RecordService : Service() {
             putExtra(EXTRA_IS_RECORDING, Constants.isRecording)
         }
         sendBroadcast(intent)
+        wakeTile()
+    }
+
+    /**
+     * Wakes the tile even when the Quick Settings panel is closed, so its
+     * highlight reflects reality without the user reopening the panel.
+     */
+    private fun wakeTile() {
+        try {
+            TileService.requestListeningState(
+                this,
+                ComponentName(this, QRTileService::class.java)
+            )
+        } catch (e: Exception) {
+            Log.w(Constants.TAG, "wakeTile failed: ${e.message}")
+        }
+    }
+
+    private fun hapticTick() {
+        try {
+            val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+            val vib = vm.defaultVibrator
+            if (vib.hasVibrator()) {
+                vib.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK))
+            }
+        } catch (e: Exception) {
+            Log.w(Constants.TAG, "Haptic failed: ${e.message}")
+        }
     }
 
     // ------------------------------------------------------------------
@@ -614,27 +633,36 @@ class RecordService : Service() {
     }
 
     private fun closeRecorder() {
-        try { mediaRecorder?.release() } catch (e: Exception) {
+        try {
+            mediaRecorder?.release()
+        } catch (e: Exception) {
             Log.w(Constants.TAG, "recorder release: ${e.message}")
         }
         mediaRecorder = null
     }
 
-    /** Closes the current recording segment. keepAlive=false means full stop. */
     private fun teardownSegment(keepAlive: Boolean) {
-        try { mediaRecorder?.stop() } catch (e: Exception) {
+        try {
+            mediaRecorder?.stop()
+        } catch (e: Exception) {
             Log.w(Constants.TAG, "recorder stop: ${e.message}")
         }
-        try { captureSession?.close() } catch (e: Exception) {
+        try {
+            captureSession?.close()
+        } catch (e: Exception) {
             Log.w(Constants.TAG, "session close: ${e.message}")
         }
         captureSession = null
-        try { cameraDevice?.close() } catch (e: Exception) {
+        try {
+            cameraDevice?.close()
+        } catch (e: Exception) {
             Log.w(Constants.TAG, "camera close: ${e.message}")
         }
         cameraDevice = null
         closeRecorder()
-        try { outputPfd?.close() } catch (e: Exception) {
+        try {
+            outputPfd?.close()
+        } catch (e: Exception) {
             Log.w(Constants.TAG, "pfd close: ${e.message}")
         }
         outputPfd = null
@@ -660,21 +688,34 @@ class RecordService : Service() {
     }
 
     private fun stopEverything() {
+        val wasRecording = Constants.isRecording
         Constants.isRecording = false
         broadcastState()
+        if (wasRecording) hapticTick()
+
         mainHandler.removeCallbacks(micPollRunnable)
+
         batteryReceiver?.let {
-            try { unregisterReceiver(it) } catch (e: Exception) { }
+            try {
+                unregisterReceiver(it)
+            } catch (e: Exception) {
+                // ignore
+            }
             batteryReceiver = null
         }
+
         cameraAvailabilityCallback?.let {
             try {
                 val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
                 cm.unregisterAvailabilityCallback(it)
-            } catch (e: Exception) { }
+            } catch (e: Exception) {
+                // ignore
+            }
             cameraAvailabilityCallback = null
         }
+
         teardownSegment(false)
+
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } catch (e: Exception) {
