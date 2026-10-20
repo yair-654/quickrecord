@@ -23,6 +23,18 @@ object Constants {
     const val USE_ACTIVITY_PATH = true
 
     /**
+     * Battery threshold percent at which recording stops cleanly.
+     * Prevents phone death with corrupted file.
+     */
+    const val BATTERY_THRESHOLD_PERCENT = 5
+
+    /**
+     * Default folder name under Movies/ where recordings are saved.
+     * User can change this via app settings.
+     */
+    const val DEFAULT_FOLDER = "QuickRecord"
+
+    /**
      * True while RecordService is actively recording. Written by the service,
      * read by the tile (same process) to decide start versus stop, and by
      * MainActivity for the status screen.
@@ -40,4 +52,14 @@ object Constants {
     /** Timestamp (millis since boot) of when lastError was set. */
     @Volatile
     var lastErrorTime: Long = 0L
+
+    /**
+     * Custom folder path (relative to MediaStore root). Empty means use DEFAULT_FOLDER.
+     * Persisted by SharedPreferences in MainActivity, read by RecordService.
+     */
+    @Volatile
+    var customFolderOverride: String? = null
+
+    /** Broadcast action for recording state changes, for live UI updates. */
+    const val BROADCAST_RECORDING_STATE_CHANGED = "com.israel.quickrecord.RECORDING_STATE_CHANGED"
 }
