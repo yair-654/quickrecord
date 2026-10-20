@@ -2,102 +2,81 @@ package com.israel.quickrecord
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.database.Cursor
-import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.BaseColumns
 import android.provider.MediaStore
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
-import android.widget.FrameLayout
-import android.widget.GridLayout
-import android.widget.HorizontalScrollView
-import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.graphics.Typeface
 
 class MainActivity : Activity() {
 
-    private lateinit var statusCard: CardView
-    private lateinit var filesCard: CardView
-    private lateinit var settingsCard: CardView
-    private lateinit var statusLayout: LinearLayout
-    private lateinit var filesLayout: LinearLayout
-    private lateinit var settingsLayout: LinearLayout
-
-    private lateinit var filesReceiver: BroadcastReceiver
-
-    // ------------------------------------------------------------------
-    // Lifecycle
-    // ------------------------------------------------------------------
+    private var dp = 1f
+    private lateinit var statusBody: LinearLayout
+    private lateinit var filesBody: LinearLayout
+    private lateinit var folderField: EditText
+    private lateinit var stateReceiver: BroadcastReceiver
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        dp = resources.displayMetrics.density
 
-        val dp = resources.displayMetrics.density
+        Constants.customFolderOverride =
+            SharedPreferencesWrapper(this).getFolder().takeIf { it.isNotEmpty() }
 
-        val root = ScrollView(this).apply {
-            setBackgroundColor(getColorByAttr(R.attr.bg_root))
-            overScrollMode = OVER_SCROLL_NEVER
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(getColor(R.color.bg_root))
+            isFillViewport = true
         }
-
-        val inner = LinearLayout(this).apply {
+        val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding((dp * 16).toInt(), (dp * 16).toInt(), (dp * 16).toInt(), (dp * 32).toInt())
+            setPadding(p(16), p(16), p(16), p(32))
         }
 
-        // Status card
-        statusCard = CardView(this, "Status").apply {
-            statusLayout = cardBody as LinearLayout
-            refreshStatus()
-        }
-        inner.addView(statusCard.cardRoot, cardLayoutParams(dp))
+        val statusCard = makeCard(getString(R.string.status_header))
+        statusBody = statusCard.second
+        col.addView(statusCard.first, cardLp())
 
-        // Files card
-        filesCard = CardView(this, "Recordings").apply {
-            filesLayout = cardBody as LinearLayout
-            refreshFiles()
-        }
-        inner.addView(filesCard.cardRoot, cardLayoutParams(dp))
+        val filesCard = makeCard(getString(R.string.files_header))
+        filesBody = filesCard.second
+        col.addView(filesCard.first, cardLp())
 
-        // Settings card
-        settingsCard = CardView(this, "Settings").apply {
-            settingsLayout = cardBody as LinearLayout
-            setupSettings(dp)
-        }
-        inner.addView(settingsCard.cardRoot, cardLayoutParams(dp))
+        val settingsCard = makeCard(getString(R.string.settings_header))
+        buildSettings(settingsCard.second)
+        col.addView(settingsCard.first, cardLp())
 
-        // Israel footer
-        val madeFooter = TextView(this).apply {
+        val footer = TextView(this).apply {
             text = getString(R.string.made_in_israel)
-            textSize = 14f
-            setTextColor(getColorByAttr(R.attr.text_secondary))
-            setPadding(0, (dp * 32).toInt(), 0, (dp * 16).toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextColor(getColor(R.color.text_secondary))
             gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, p(24), 0, p(8))
         }
-        inner.addView(madeFooter)
+        col.addView(footer)
 
-        root.addView(inner)
-        setContentView(root)
+        scroll.addView(col)
+        setContentView(scroll)
 
         registerStateReceiver()
+        refreshStatus()
+        refreshFiles()
     }
 
     override fun onResume() {
@@ -107,84 +86,129 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        if (::filesReceiver.isInitialized) {
-            try { unregisterReceiver(filesReceiver) } catch (e: Exception) { }
+        try {
+            unregisterReceiver(stateReceiver)
+        } catch (e: Exception) {
+            Log.w(Constants.TAG, "receiver unregister: ${e.message}")
         }
         super.onDestroy()
     }
 
     // ------------------------------------------------------------------
-    // Status
+    // Layout helpers
+    // ------------------------------------------------------------------
+
+    private fun p(v: Int): Int = (v * dp).toInt()
+
+    private fun cardLp(): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = p(16) }
+
+    private fun rowLp(): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = p(6) }
+
+    private fun makeCard(title: String): Pair<LinearLayout, LinearLayout> {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(getColor(R.color.bg_card))
+            setPadding(p(16), p(16), p(16), p(16))
+        }
+        val header = TextView(this).apply {
+            text = title
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(getColor(R.color.text_primary))
+            setPadding(0, 0, 0, p(12))
+        }
+        card.addView(header)
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        card.addView(body)
+        return Pair(card, body)
+    }
+
+    private fun statusRow(label: String, ok: Boolean): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, p(4), 0, p(4))
+        }
+        val name = TextView(this).apply {
+            text = label
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextColor(getColor(R.color.text_primary))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val state = TextView(this).apply {
+            text = if (ok) getString(R.string.state_yes) else getString(R.string.state_no)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextColor(if (ok) getColor(R.color.state_ok) else getColor(R.color.state_error))
+            gravity = Gravity.END
+        }
+        row.addView(name)
+        row.addView(state)
+        return row
+    }
+
+    // ------------------------------------------------------------------
+    // Status card
     // ------------------------------------------------------------------
 
     private fun refreshStatus() {
-        statusLayout.removeAllViews()
+        statusBody.removeAllViews()
 
-        val cam = checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-        val mic = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        val notif = checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-        val loc = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        val files = checkSelfPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED
+        val cam = granted(Manifest.permission.CAMERA)
+        val mic = granted(Manifest.permission.RECORD_AUDIO)
+        val notif = granted(Manifest.permission.POST_NOTIFICATIONS)
+        val loc = granted(Manifest.permission.ACCESS_FINE_LOCATION)
 
-        val header = LabelRow(getString(R.string.status_header))
-        statusLayout.addView(header.root, layoutParams())
+        statusBody.addView(statusRow(getString(R.string.label_camera), cam), rowLp())
+        statusBody.addView(statusRow(getString(R.string.label_microphone), mic), rowLp())
+        statusBody.addView(statusRow(getString(R.string.label_notifications), notif), rowLp())
+        statusBody.addView(statusRow(getString(R.string.label_location), loc), rowLp())
+        statusBody.addView(
+            statusRow(getString(R.string.label_recording_now), Constants.isRecording),
+            rowLp()
+        )
 
-        val perms = RowWithCheckbox(this, getString(R.string.label_camera), cam)
-        statusLayout.addView(perms.root, layoutParams())
-
-        val micr = RowWithCheckbox(this, getString(R.string.label_microphone), mic)
-        statusLayout.addView(micr.root, layoutParams())
-
-        val not = RowWithCheckbox(this, getString(R.string.label_notifications), notif)
-        statusLayout.addView(not.root, layoutParams())
-
-        val locl = RowWithCheckbox(this, getString(R.string.label_location), loc)
-        statusLayout.addView(locl.root, layoutParams())
-
-        val file = RowWithCheckbox(this, getString(R.string.label_files_access), files)
-        statusLayout.addView(file.root, layoutParams())
-
-        val recording = RowWithCheckbox(this, getString(R.string.label_recording_now), Constants.isRecording)
-        statusLayout.addView(recording.root, layoutParams())
-
-        val error = TextView(this).apply {
+        val err = TextView(this).apply {
             text = if (Constants.lastError == null) {
-                getString(R.string.state_none)
+                getString(R.string.label_last_error) + ": " + getString(R.string.state_none)
             } else {
-                "${getString(R.string.label_last_error)}\n${Constants.lastError}"
+                getString(R.string.label_last_error) + ":\n" + Constants.lastError
             }
-            textSize = 13f
-            setTextColor(getColorByAttr(R.attr.state_error))
-            setPadding(0, (16 * dp).toInt(), 0, 0)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(getColor(R.color.state_error))
+            setPadding(0, p(12), 0, 0)
         }
-        statusLayout.addView(error, layoutParams())
+        statusBody.addView(err, rowLp())
 
-        val btn = Button(this).apply {
+        val grant = Button(this).apply {
             text = getString(R.string.btn_grant_permissions)
             setOnClickListener { requestAllPermissions() }
         }
-        statusLayout.addView(btn, layoutParams())
+        statusBody.addView(grant, rowLp())
     }
 
-    private fun requestAllPermissions() {
-        val missing = mutableListOf<String>()
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
-            missing.add(Manifest.permission.CAMERA)
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
-            missing.add(Manifest.permission.RECORD_AUDIO)
-        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
-            missing.add(Manifest.permission.POST_NOTIFICATIONS)
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
-            missing.add(Manifest.permission.ACCESS_FINE_LOCATION)
-        if (checkSelfPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) != PackageManager.PERMISSION_GRANTED)
-            missing.add(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+    private fun granted(perm: String): Boolean =
+        checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED
 
+    private fun requestAllPermissions() {
+        val wanted = mutableListOf(
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.POST_NOTIFICATIONS,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+        val missing = wanted.filter { !granted(it) }
         if (missing.isEmpty()) {
-            Toast.makeText(this, "All permissions granted", Toast.LENGTH_SHORT).show()
-            refreshStatus()
+            Toast.makeText(this, "All permissions already granted", Toast.LENGTH_SHORT).show()
             return
         }
-
         requestPermissions(missing.toTypedArray(), REQ_PERMS)
     }
 
@@ -196,327 +220,358 @@ class MainActivity : Activity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != REQ_PERMS) return
-        Toast.makeText(this, "Permission changes applied", Toast.LENGTH_SHORT).show()
         refreshStatus()
     }
 
     // ------------------------------------------------------------------
-    // Files
+    // Files card
     // ------------------------------------------------------------------
+
+    private fun currentFolder(): String =
+        (Constants.customFolderOverride ?: Constants.DEFAULT_FOLDER)
+            .trim().replace("/", "-").ifEmpty { Constants.DEFAULT_FOLDER }
 
     private fun refreshFiles() {
-        filesLayout.removeAllViews()
+        filesBody.removeAllViews()
+        val items = loadFiles()
 
-        val header = LabelRow(getString(R.string.files_header))
-        filesLayout.addView(header.root, layoutParams())
-
-        val folder = (Constants.customFolderOverride ?: Constants.DEFAULT_FOLDER)
-            .trim().replace("/", "-").ifEmpty { Constants.DEFAULT_FOLDER }
-        val sel = ContentValues().apply {
-            put(MediaStore.Video.Media.MEDIA_TYPE, MediaStore.Video.TYPE_VIDEO)
-        }
-        val uri = Uri.withAppendedPath(
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-            "?$MediaStore.Video.Media.RELATIVE_PATH=$Movies/$folder&$MediaStore.Video.Media.MIME_TYPE=video/mp4"
-        )
-
-        val cursor = contentResolver.query(
-            uri,
-            arrayOf(BaseColumns._ID, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.DATE_ADDED, MediaStore.Video.Media.SIZE, MediaStore.Video.Media.DURATION),
-            null, null, MediaStore.Video.Media.DATE_ADDED + " DESC"
-        )
-
-        if (cursor == null || !cursor.moveToFirst()) {
-            if (cursor != null) cursor.close()
+        if (items.isEmpty()) {
             val empty = TextView(this).apply {
                 text = getString(R.string.empty_files)
-                textSize = 14f
-                setTextColor(getColorByAttr(R.attr.text_secondary))
-                setPadding(0, (8 * dp).toInt(), 0, 0)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                setTextColor(getColor(R.color.text_secondary))
+                setPadding(0, p(8), 0, 0)
             }
-            filesLayout.addView(empty, layoutParams())
+            filesBody.addView(empty, rowLp())
             return
         }
 
-        val list = mutableListOf<FileItem>()
-        do {
-            try {
-                val id = cursor.getLong(cursor.getColumnIndexOrThrow(BaseColumns._ID))
-                val name = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME))
-                val date = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED))
-                val size = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE))
-                val dur = cursor.getInt(cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION))
-                list.add(FileItem(id, name, date, size, dur))
-            } catch (e: Exception) { continue }
-        } while (cursor.moveToNext())
-        cursor.close()
-
-        if (list.isEmpty()) {
-            val empty = TextView(this).apply {
-                text = getString(R.string.empty_files)
-                textSize = 14f
-                setTextColor(getColorByAttr(R.attr.text_secondary))
-                setPadding(0, (8 * dp).toInt(), 0, 0)
+        for (item in items) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, p(10), 0, p(10))
+                isClickable = true
+                setOnClickListener { showDetails(item) }
             }
-            filesLayout.addView(empty, layoutParams())
-            return
-        }
-
-        for (item in list) {
-            val row = FileRow(this, item) { detailsFor(item) }
-            filesLayout.addView(row.root, layoutParams())
+            val name = TextView(this).apply {
+                text = item.name
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                setTextColor(getColor(R.color.text_primary))
+            }
+            val meta = TextView(this).apply {
+                val bits = mutableListOf<String>()
+                if (item.size > 0) bits.add(formatBytes(item.size))
+                if (item.durationMs > 0) bits.add(formatDuration(item.durationMs))
+                if (item.date > 0) bits.add(formatDate(item.date * 1000L))
+                text = bits.joinToString("  •  ")
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setTextColor(getColor(R.color.text_secondary))
+                setPadding(0, p(2), 0, 0)
+            }
+            row.addView(name)
+            row.addView(meta)
+            filesBody.addView(row, rowLp())
         }
     }
 
-    private fun detailsFor(item: FileItem) {
-        val prefs = getSharedPreferences(Constants.LOCATION_PREFS, MODE_PRIVATE)
-        val locationSidecar = prefs.getString(item.name, null)
+    private fun loadFiles(): List<FileItem> {
+        val folder = currentFolder()
+        val out = mutableListOf<FileItem>()
 
-        val resolver = contentResolver
-        val cursor = resolver.query(
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+        val videoArgs = arrayOf("${Environment.DIRECTORY_MOVIES}/$folder/%")
+        val videoCursor = try {
+            contentResolver.query(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(
+                    BaseColumns._ID,
+                    MediaStore.Video.Media.DISPLAY_NAME,
+                    MediaStore.Video.Media.DATE_ADDED,
+                    MediaStore.Video.Media.SIZE,
+                    MediaStore.Video.Media.DURATION
+                ),
+                MediaStore.Video.Media.RELATIVE_PATH + " LIKE ?",
+                videoArgs,
+                MediaStore.Video.Media.DATE_ADDED + " DESC"
+            )
+        } catch (e: Exception) {
+            Log.w(Constants.TAG, "video query failed: ${e.message}")
+            null
+        }
+        videoCursor?.use { c ->
+            while (c.moveToNext()) {
+                out.add(
+                    FileItem(
+                        c.getLong(0),
+                        c.getString(1) ?: "unknown",
+                        c.getLong(2),
+                        c.getLong(3),
+                        c.getInt(4),
+                        false
+                    )
+                )
+            }
+        }
+
+        val audioArgs = arrayOf("${Environment.DIRECTORY_MUSIC}/$folder/%")
+        val audioCursor = try {
+            contentResolver.query(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(
+                    BaseColumns._ID,
+                    MediaStore.Audio.Media.DISPLAY_NAME,
+                    MediaStore.Audio.Media.DATE_ADDED,
+                    MediaStore.Audio.Media.SIZE,
+                    MediaStore.Audio.Media.DURATION
+                ),
+                MediaStore.Audio.Media.RELATIVE_PATH + " LIKE ?",
+                audioArgs,
+                MediaStore.Audio.Media.DATE_ADDED + " DESC"
+            )
+        } catch (e: Exception) {
+            Log.w(Constants.TAG, "audio query failed: ${e.message}")
+            null
+        }
+        audioCursor?.use { c ->
+            while (c.moveToNext()) {
+                out.add(
+                    FileItem(
+                        c.getLong(0),
+                        c.getString(1) ?: "unknown",
+                        c.getLong(2),
+                        c.getLong(3),
+                        c.getInt(4),
+                        true
+                    )
+                )
+            }
+        }
+
+        return out.sortedByDescending { it.date }
+    }
+
+    // ------------------------------------------------------------------
+    // Details dialog
+    // ------------------------------------------------------------------
+
+    private fun showDetails(item: FileItem) {
+        val rows = collectDetails(item)
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(p(20), p(8), p(20), p(8))
+        }
+
+        for (pair in rows) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, p(6), 0, p(6))
+            }
+            val key = TextView(this).apply {
+                text = pair.first
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                setTextColor(getColor(R.color.text_secondary))
+                layoutParams =
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.4f)
+            }
+            val value = TextView(this).apply {
+                text = pair.second ?: getString(R.string.detail_unknown)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                setTextColor(getColor(R.color.text_primary))
+                layoutParams =
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.6f)
+            }
+            row.addView(key)
+            row.addView(value)
+            content.addView(row)
+        }
+
+        val scroller = ScrollView(this).apply { addView(content) }
+
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.details_header))
+            .setView(scroller)
+            .setPositiveButton(getString(R.string.btn_close), null)
+            .show()
+    }
+
+    private fun collectDetails(item: FileItem): List<Pair<String, String?>> {
+        val out = mutableListOf<Pair<String, String?>>()
+        out.add(getString(R.string.detail_name) to item.name)
+        out.add(getString(R.string.detail_type) to if (item.isAudio) "audio-only" else "video")
+        out.add(getString(R.string.detail_id) to item.id.toString())
+        out.add(getString(R.string.detail_size) to formatBytes(item.size))
+        out.add(
+            getString(R.string.detail_duration) to
+                if (item.durationMs > 0) formatDuration(item.durationMs) else null
+        )
+        out.add(
+            getString(R.string.detail_date) to
+                if (item.date > 0) formatDate(item.date * 1000L) else null
+        )
+
+        val uri = if (item.isAudio) {
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        } else {
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        }
+
+        val projection = if (item.isAudio) {
+            arrayOf(
+                MediaStore.Audio.Media.DATA,
+                MediaStore.Audio.Media.MIME_TYPE,
+                MediaStore.Audio.Media.DATE_MODIFIED
+            )
+        } else {
             arrayOf(
                 MediaStore.Video.Media.DATA,
+                MediaStore.Video.Media.MIME_TYPE,
+                MediaStore.Video.Media.DATE_MODIFIED,
                 MediaStore.Video.Media.WIDTH,
                 MediaStore.Video.Media.HEIGHT,
-                MediaStore.Video.Media.BITRATE,
-                MediaStore.Video.Media.CODEC,
-                MediaStore.Video.Media.MIME_TYPE
-            ),
-            "${BaseColumns._ID}=?",
-            arrayOf("${item.id}"),
-            null
-        )
-
-        var path: String? = null
-        var width: Int? = null
-        var height: Int? = null
-        var bitrate: Int? = null
-        var codec: String? = null
-        var mime: String? = null
-        var added: Long? = null
-        var modified: Long? = null
+                MediaStore.Video.Media.BITRATE
+            )
+        }
 
         try {
-            if (cursor != null && cursor.moveToFirst()) {
-                path = cursor.getString(0)
-                width = cursor.getInt(1)
-                height = cursor.getInt(2)
-                bitrate = cursor.getInt(3)
-                codec = cursor.getString(4)
-                mime = cursor.getString(5)
-                added = cursor.getLong(6)
-                modified = cursor.getLong(7)
+            contentResolver.query(
+                uri,
+                projection,
+                BaseColumns._ID + "=?",
+                arrayOf(item.id.toString()),
+                null
+            )?.use { c ->
+                if (c.moveToFirst()) {
+                    out.add(getString(R.string.detail_path) to c.getString(0))
+                    out.add(getString(R.string.detail_mime) to c.getString(1))
+                    val mod = c.getLong(2)
+                    out.add(
+                        getString(R.string.detail_modified) to
+                            if (mod > 0) formatDate(mod * 1000L) else null
+                    )
+                    if (!item.isAudio) {
+                        val w = c.getInt(3)
+                        val h = c.getInt(4)
+                        val br = c.getInt(5)
+                        out.add(
+                            getString(R.string.detail_resolution) to
+                                if (w > 0 && h > 0) "${w} x ${h}" else null
+                        )
+                        out.add(
+                            getString(R.string.detail_bitrate) to
+                                if (br > 0) "${br / 1000} kbps" else null
+                        )
+                    }
+                }
             }
-        } finally {
-            cursor?.close()
+        } catch (e: Exception) {
+            Log.w(Constants.TAG, "details query failed: ${e.message}")
         }
 
-        val layout = GridLayout(this).apply {
-            columnCount = 2
-            setPadding((16 * dp).toInt(), 0, 0, 0)
+        val loc = try {
+            getSharedPreferences(Constants.LOCATION_PREFS, MODE_PRIVATE)
+                .getString(item.name, null)
+        } catch (e: Exception) {
+            null
         }
+        out.add(getString(R.string.detail_location) to loc)
 
-        fun label(text: String): TextView = TextView(this).apply {
-            text = text
-            textSize = 13f
-            setTextColor(getColorByAttr(R.attr.text_secondary))
-            gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
-            setPadding((16 * dp).toInt(), (8 * dp).toInt(), (16 * dp).toInt(), (8 * dp).toInt())
-        }
-
-        fun value(v: String?): TextView = TextView(this).apply {
-            text = v ?: getString(R.string.detail_unknown)
-            textSize = 13f
-            setTextColor(getColorByAttr(R.attr.text_primary))
-            gravity = Gravity.LEFT or Gravity.CENTER_VERTICAL
-            setPadding((16 * dp).toInt(), (8 * dp).toInt(), (16 * dp).toInt(), (8 * dp).toInt())
-        }
-
-        val pairs: List<Pair<String, String?>> = listOf(
-            getString(R.string.detail_name) to item.name,
-            getString(R.string.detail_path) to path,
-            getString(R.string.detail_date) to (if (item.date > 0) formatDateTime(item.date * 1000L) else null),
-            getString(R.string.detail_size) to (formatBytes(item.size)),
-            getString(R.string.detail_duration) to (if (item.durationMs > 0) formatDuration(item.durationMs) else null),
-            getString(R.string.detail_id) to ("${item.id}"),
-            getString(R.string.detail_resolution) to (if (width != null && height != null) "${width}x${height}" else null),
-            getString(R.string.detail_bitrate) to (if (bitrate != null) "${bitrate} bps" else null),
-            getString(R.string.detail_framerate) to (null),
-            getString(R.string.detail_mime) to mime,
-            getString(R.string.detail_type) to (if (item.name.startsWith("AUD_")) "audio-only" else "video"),
-            getString(R.string.detail_added) to (if (added != null) formatDateTime(added * 1000L) else null),
-            getString(R.string.detail_modified) to (if (modified != null) formatDateTime(modified * 1000L) else null),
-            getString(R.string.detail_location) to locationSidecar
-        )
-
-        var r = 0
-        for ((lbl, valStr) in pairs) {
-            layout.addView(label(lbl), GridLayout.LayoutParams().apply {
-                columnSpec = GridLayout.spec(0, 1f)
-                rowSpec = GridLayout.spec(r++)
-            })
-            layout.addView(value(valStr), GridLayout.LayoutParams().apply {
-                columnSpec = GridLayout.spec(1, 1f)
-                rowSpec = GridLayout.spec(r - 1)
-            })
-        }
-
-        showDetailsSheet(layout)
-    }
-
-    private fun showDetailsSheet(content: View) {
-        val popup = PopupWindow(this, null, R.style.Theme_QuickRecord).apply {
-            width = ViewGroup.LayoutParams.MATCH_PARENT
-            height = ViewGroup.LayoutParams.WRAP_CONTENT
-            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
-            isFocusable = true
-            isOutsideTouchable = true
-        }
-
-        val wrapper = ScrollView(this).apply {
-            setBackgroundColor(getColorByAttr(R.attr.bg_card))
-            setPadding((16 * dp).toInt(), (16 * dp).toInt(), (16 * dp).toInt(), (16 * dp).toInt())
-            addView(content)
-        }
-
-        popup.contentView = wrapper
-
-        val overlay = FrameLayout(this).apply {
-            setBackgroundColor(android.graphics.Color.argb(128, 0, 0, 0))
-            setOnTouchListener { _, _ -> popup.dismiss(); true }
-            addView(wrapper)
-            // Overlay content here
-            val closeBtn = Button(this).apply {
-                text = getString(R.string.btn_close)
-                setOnClickListener { popup.dismiss() }
-                setGravity(Gravity.CENTER)
-            }
-            addView(closeBtn, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-                gravity = Gravity.TOP or Gravity.END
-                setMargins(0, (16 * dp).toInt(), (16 * dp).toInt(), 0)
-            })
-        }
-
-        popup.showAtLocation(overlay, Gravity.NO_GRAVITY, 0, 0)
-        windowManager.addView(overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        return out
     }
 
     // ------------------------------------------------------------------
-    // Settings
+    // Settings card
     // ------------------------------------------------------------------
 
-    private fun setupSettings(dp: Float) {
-        settingsLayout.removeAllViews()
-
-        val header = LabelRow(getString(R.string.settings_header))
-        settingsLayout.addView(header.root, layoutParams())
-
+    private fun buildSettings(body: LinearLayout) {
         val hint = TextView(this).apply {
             text = getString(R.string.hint_folder)
-            textSize = 13f
-            setTextColor(getColorByAttr(R.attr.text_secondary))
-            setPadding(0, (8 * dp).toInt(), 0, (16 * dp).toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(getColor(R.color.text_secondary))
+            setPadding(0, 0, 0, p(8))
         }
-        settingsLayout.addView(hint, layoutParams())
+        body.addView(hint)
 
-        val current = Constants.customFolderOverride ?: Constants.DEFAULT_FOLDER
-        val folderField = EditText(this).apply {
-            setText(current)
+        folderField = EditText(this).apply {
+            setText(currentFolder())
             singleLine = true
-            hint = getString(R.string.label_folder)
-            setTextColor(getColorByAttr(R.attr.text_primary))
-            setHintTextColor(getColorByAttr(R.attr.text_secondary))
-            setBackgroundColor(getColorByAttr(R.attr.bg_input))
-            setPadding((16 * dp).toInt(), (12 * dp).toInt(), (16 * dp).toInt(), (12 * dp).toInt())
-            setOnEditorActionListener { _, actionId, _ ->
-                if (actionId == EditorInfo.IME_ACTION_DONE) {
-                    saveCustomFolder(this)
-                    true
-                } else false
-            }
+            setTextColor(getColor(R.color.text_primary))
+            setHintTextColor(getColor(R.color.text_secondary))
+            setBackgroundColor(getColor(R.color.bg_input))
+            setPadding(p(12), p(12), p(12), p(12))
         }
-        settingsLayout.addView(folderField, layoutParams())
+        body.addView(folderField, rowLp())
 
-        val saveBtn = Button(this).apply {
+        val save = Button(this).apply {
             text = getString(R.string.btn_save)
-            setOnClickListener { saveCustomFolder(this) }
+            setOnClickListener { saveFolder() }
         }
-        settingsLayout.addView(saveBtn, layoutParams())
+        body.addView(save, rowLp())
 
-        val info = TextView(this).apply {
-            text = "Folder changes apply to recordings started AFTER pressing Save."
-            textSize = 12f
-            setTextColor(getColorByAttr(R.attr.text_secondary))
-            setPadding(0, (16 * dp).toInt(), 0, 0)
+        val note = TextView(this).apply {
+            text = "Applies to recordings started after saving."
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(getColor(R.color.text_secondary))
+            setPadding(0, p(8), 0, 0)
         }
-        settingsLayout.addView(info, layoutParams())
+        body.addView(note)
     }
 
-    private fun saveCustomFolder(view: View) {
-        val im = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-        im.hideSoftInputFromWindow(view.windowToken, 0)
-        val field = view.parent.parent as LinearLayout
-        val folder = field.getChildAt(1) as EditText
-        val value = folder.text.toString().trim()
-        if (value.isEmpty()) {
-            Constants.customFolderOverride = null
-        } else {
-            Constants.customFolderOverride = value.replace("/", "-")
-        }
-        SharedPreferencesWrapper(this).saveFolder(Constants.customFolderOverride ?: Constants.DEFAULT_FOLDER)
-        Toast.makeText(this, "Folder saved", Toast.LENGTH_SHORT).show()
-        refreshStatus()
+    private fun saveFolder() {
+        val value = folderField.text.toString().trim().replace("/", "-")
+        val effective = value.ifEmpty { Constants.DEFAULT_FOLDER }
+        Constants.customFolderOverride = effective
+        SharedPreferencesWrapper(this).saveFolder(effective)
+        Toast.makeText(this, "Folder set to $effective", Toast.LENGTH_SHORT).show()
         refreshFiles()
     }
 
     // ------------------------------------------------------------------
-    // Helpers
+    // Live state updates
     // ------------------------------------------------------------------
 
     private fun registerStateReceiver() {
-        filesReceiver = object : BroadcastReceiver() {
+        stateReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                runOnUiThread { refreshFiles() }
+                runOnUiThread {
+                    refreshStatus()
+                    refreshFiles()
+                }
             }
         }
         try {
-            registerReceiver(filesReceiver, IntentFilter(Constants.BROADCAST_RECORDING_STATE_CHANGED), RECEIVER_NOT_EXPORTED)
-        } catch (e: Exception) { Log.w(Constants.TAG, "filesReceiver register failed: ${e.message}") }
+            registerReceiver(
+                stateReceiver,
+                IntentFilter(Constants.BROADCAST_RECORDING_STATE_CHANGED),
+                RECEIVER_NOT_EXPORTED
+            )
+        } catch (e: Exception) {
+            Log.w(Constants.TAG, "state receiver register failed: ${e.message}")
+        }
     }
 
-    private fun formatDateTime(epochMs: Long): String =
+    // ------------------------------------------------------------------
+    // Formatting
+    // ------------------------------------------------------------------
+
+    private fun formatDate(epochMs: Long): String =
         android.text.format.DateFormat.format("yyyy-MM-dd HH:mm", epochMs).toString()
 
     private fun formatDuration(ms: Int): String {
-        val s = ms / 1000
-        val m = s / 60
-        val sec = s % 60
-        return if (m > 0) "${m}:${sec.toString().padStart(2, '0')} min" else "${sec}s"
+        val totalSeconds = ms / 1000
+        val minutes = totalSeconds / 60
+        val seconds = totalSeconds % 60
+        return if (minutes > 0) {
+            "$minutes:${seconds.toString().padStart(2, '0')} min"
+        } else {
+            "$seconds s"
+        }
     }
 
     private fun formatBytes(bytes: Long): String = when {
-        bytes >= 1_000_000_000 -> "%.2f GB".format(bytes / 1e9)
-        bytes >= 1_000_000 -> "%.2f MB".format(bytes / 1e6)
-        bytes >= 1_000 -> "%.2f KB".format(bytes / 1e3)
+        bytes >= 1_000_000_000L -> "%.2f GB".format(bytes / 1_000_000_000.0)
+        bytes >= 1_000_000L -> "%.2f MB".format(bytes / 1_000_000.0)
+        bytes >= 1_000L -> "%.1f KB".format(bytes / 1_000.0)
         else -> "$bytes B"
-    }
-
-    private fun layoutParams(): GridLayout.LayoutParams = GridLayout.LayoutParams().apply {
-        weight = 1f
-        setMargins(0, (8 * dp).toInt(), 0, (8 * dp).toInt())
-    }
-
-    private fun cardLayoutParams(dp: Float): GridLayout.LayoutParams = GridLayout.LayoutParams().apply {
-        width = GridLayout.LayoutParams.MATCH_PARENT
-        setMargins(0, 0, 0, (16 * dp).toInt())
-    }
-
-    private fun getColorByAttr(attr: Int): Int {
-        val ta = obtainStyledAttributes(intArrayOf(attr))
-        val c = ta.getColor(0, 0)
-        ta.recycle()
-        return c
     }
 
     companion object {
@@ -524,155 +579,29 @@ class MainActivity : Activity() {
     }
 }
 
-// Minimal UI components
-
-class LabelRow(private val text: String) {
-    val root: TextView = TextView(null).apply {
-        this@LabelRow.let {
-            val tv = this
-            tv.text = it.text
-            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            tv.setTypeface(tv.typeface, android.graphics.Typeface.BOLD)
-            tv.setTextColor(it.getColorByAttr(android.R.attr.textColorPrimary))
-            val dp = it.resources.displayMetrics.density
-            tv.setPadding((16 * dp).toInt(), (8 * dp).toInt(), (16 * dp).toInt(), (8 * dp).toInt())
-        }
-    }
-
-    private fun getColorByAttr(attr: Int): Int {
-        val ta = obtainStyledAttributes(intArrayOf(attr))
-        val c = ta.getColor(0, 0)
-        ta.recycle()
-        return c
-    }
-
-    private fun obtainStyledAttributes(ids: IntArray): android.content.res.TypedArray {
-        val theme = android.view.View.getDefaultDisplay()?.context?.theme ?: android.content.res.Resources.getSystem().theme
-        return theme.obtainStyledAttributes(null, ids, 0, 0)
-    }
-}
-
-class RowWithCheckbox(context: Context, label: String, checked: Boolean) {
-    val root: LinearLayout = LinearLayout(context).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding((16 * dp).toInt(), (8 * dp).toInt(), (16 * dp).toInt(), (8 * dp).toInt())
-    }
-    private val dp: Float = context.resources.displayMetrics.density
-
-    init {
-        val txt = TextView(context).apply {
-            text = "$label: ${if (checked) context.getString(R.string.state_granted) else context.getString(R.string.state_missing)}"
-            textSize = 14f
-            setTextColor(context.getColorByAttr(R.attr.text_primary))
-            setPadding(0, 0, 0, 0)
-        }
-        root.addView(txt, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
-
-        val dot = TextView(context).apply {
-            text = if (checked) "✓" else "✗"
-            textSize = 14f
-            setTextColor(if (checked) context.getColorByAttr(R.attr.state_ok) else context.getColorByAttr(R.attr.state_error))
-            gravity = Gravity.RIGHT
-            setPadding((16 * dp).toInt(), 0, (16 * dp).toInt(), 0)
-        }
-        root.addView(dot, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-    }
-}
-
-class FileRow(context: Context, item: FileItem, private val onClick: () -> Unit) {
-    val root: LinearLayout = LinearLayout(context).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding((16 * dp).toInt(), (8 * dp).toInt(), (16 * dp).toInt(), (8 * dp).toInt())
-        setBackgroundResource(android.R.drawable.list_selector_background)
-        isClickable = true
-        isFocusable = true
-        setOnClickListener { onClick() }
-    }
-    private val dp: Float = context.resources.displayMetrics.density
-
-    init {
-        val icon = TextView(context).apply {
-            text = if (item.name.startsWith("AUD_")) "🎵" else "🎥"
-            textSize = 24f
-            setPadding((8 * dp).toInt(), 0, (8 * dp).toInt(), 0)
-        }
-        root.addView(icon, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-
-        val info = TextView(context).apply {
-            val meta = StringBuilder(item.name)
-            if (item.size > 0) {
-                meta.append(" • ").append(formatBytes(item.size))
-            }
-            if (item.durationMs > 0) {
-                meta.append(" • ").append(formatDuration(item.durationMs))
-            }
-            text = meta.toString()
-            textSize = 14f
-            setTextColor(context.getColorByAttr(R.attr.text_primary))
-            setPadding((8 * dp).toInt(), 0, 0, 0)
-        }
-        root.addView(info, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-    }
-
-    private fun formatBytes(bytes: Long): String = when {
-        bytes >= 1_000_000_000 -> "%.1f GB".format(bytes / 1e9)
-        bytes >= 1_000_000 -> "%.1f MB".format(bytes / 1e6)
-        bytes >= 1_000 -> "%.1f KB".format(bytes / 1e3)
-        else -> "$bytes B"
-    }
-
-    private fun formatDuration(ms: Int): String {
-        val s = ms / 1000
-        val m = s / 60
-        val sec = s % 60
-        return if (m > 0) "${m}:${sec.toString().padStart(2, '0')}" else "${sec}s"
-    }
-}
-
-class CardView(context: Context, title: String) {
-    val cardRoot: FrameLayout = FrameLayout(context)
-    val cardBody: LinearLayout = LinearLayout(context)
-    private val dp: Float = context.resources.displayMetrics.density
-
-    init {
-        cardBody.orientation = LinearLayout.VERTICAL
-        cardBody.setBackgroundColor(context.getColorByAttr(R.attr.bg_card))
-        cardBody.setPadding((16 * dp).toInt(), (16 * dp).toInt(), (16 * dp).toInt(), (16 * dp).toInt())
-
-        val header = TextView(context).apply {
-            text = title
-            textSize = 18f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setTextColor(context.getColorByAttr(R.attr.text_primary))
-            setPadding(0, 0, 0, (16 * dp).toInt())
-        }
-
-        cardRoot.addView(header, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-            gravity = Gravity.TOP
-            setMargins(0, (16 * dp).toInt(), 0, 0)
-        })
-        cardRoot.addView(cardBody, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
-    }
-}
-
 class SharedPreferencesWrapper(private val ctx: Context) {
     fun saveFolder(path: String) {
-        ctx.getSharedPreferences("quickrecord_prefs", Context.MODE_PRIVATE).edit()
-            .putString("custom_folder", path)
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_FOLDER, path)
             .apply()
     }
-    fun getFolder(): String {
-        return ctx.getSharedPreferences("quickrecord_prefs", Context.MODE_PRIVATE).getString("custom_folder", Constants.DEFAULT_FOLDER) ?: Constants.DEFAULT_FOLDER
+
+    fun getFolder(): String =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_FOLDER, Constants.DEFAULT_FOLDER) ?: Constants.DEFAULT_FOLDER
+
+    companion object {
+        private const val PREFS = "quickrecord_prefs"
+        private const val KEY_FOLDER = "custom_folder"
     }
 }
 
-private fun Context.getColorByAttr(attr: Int): Int {
-    val ta = theme.obtainStyledAttributes(intArrayOf(attr))
-    val c = ta.getColor(0, 0)
-    ta.recycle()
-    return c
-}
-
-data class FileItem(val id: Long, val name: String, val date: Long, val size: Long, val durationMs: Int)
+data class FileItem(
+    val id: Long,
+    val name: String,
+    val date: Long,
+    val size: Long,
+    val durationMs: Int,
+    val isAudio: Boolean
+)
