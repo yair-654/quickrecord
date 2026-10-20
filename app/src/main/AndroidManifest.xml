@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- ============================================================
          PERMISSIONS
@@ -15,13 +15,14 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
+    <!-- Normal permission, auto-granted at install, no prompt.
+         Required for tile haptic feedback. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <!-- Android 13+: read our own videos from MediaStore for the file browser. -->
     <uses-permission
         android:name="android.permission.READ_MEDIA_VIDEO"
         android:maxSdkVersion="33" />
-
-    <!-- Android 13+: without this, READ_MEDIA_VIDEO grants access to all
-         videos; with it, we see only media we created, which is all we want. -->
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
 
     <!-- Pre-Android-13 fallback for the same read access. -->
@@ -43,7 +44,9 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.QuickRecord">
 
-        <!-- Launcher: permissions, status, recordings list, settings. -->
+        <!-- Launcher: permissions, status, recordings list, settings.
+             The QS_TILE_PREFERENCES filter is what makes a long-press on
+             the Quick Settings tile open this app. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -52,21 +55,10 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
-
-        <!-- Secondary launcher entry for long-press on the QS tile.
-             SystemUI opens this when the user long-presses the tile and
-             picks "App". Points at the same MainActivity. -->
-        <activity-alias
-            android:name=".TileOpen"
-            android:exported="true"
-            android:label="@string/app_name"
-            android:targetActivity=".MainActivity">
             <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.INFO" />
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
             </intent-filter>
-        </activity-alias>
+        </activity>
 
         <!-- Lock-screen bridge. -->
         <activity
