@@ -37,7 +37,7 @@
     <string name="state_none">none</string>
     <string name="hint_folder">Folder under Movies, for example QuickRecord</string>
     <string name="empty_files">No recordings yet.</string>
-    <string name="made_in_israel">🇮🇱 Made proudly in Israel</string>
+    <string name="made_in_israel">Proudly made in Israel 🇮🇱</string>
 
     <!-- File details -->
     <string name="details_header">File details</string>
