@@ -9,37 +9,34 @@ import android.util.Log
 import android.view.WindowManager
 
 /**
- * The lock-screen bridge activity, spec point (b) and (c).
+ * The lock-screen bridge activity.
  *
  * The Quick Settings tile launches THIS, not the service, because Android 14+
  * while-in-use restrictions require our app to be visibly on screen when the
  * camera opens. This activity appears over the lock screen (like an alarm
- * clock), starts RecordService, keeps the screen lit for a short moment
- * while the service opens the camera, then removes itself.
+ * clock), starts RecordService, stays barely long enough for the service to
+ * begin the camera open, then removes itself.
  */
 class RecordActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // The two calls that let us draw over the keyguard WITHOUT unlocking.
+        // Draw over the keyguard WITHOUT unlocking.
         setShowWhenLocked(true)
         setTurnScreenOn(true)
         Log.i(Constants.TAG, "RecordActivity showing over lock screen")
 
-        // Keep the screen awake long enough for camera open to be covered
-        // by a visible activity.
+        // Keep the screen lit during the brief camera-open window.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // Kick off the foreground service. The service opens the camera;
-        // because this activity is on screen, while-in-use rules are
-        // satisfied. If it fails, the reason lands in Constants.lastError.
+        // Kick off the foreground service.
         val startIntent = Intent(this, RecordService::class.java).apply {
             action = RecordService.ACTION_START
         }
         startForegroundService(startIntent)
 
-        // Vanish shortly after. No UI, no buttons, nothing for the user to do.
+        // Vanish almost immediately.
         Handler(Looper.getMainLooper()).postDelayed({
             Log.i(Constants.TAG, "RecordActivity finishing")
             finishAndRemoveTask()
@@ -47,7 +44,12 @@ class RecordActivity : Activity() {
     }
 
     companion object {
-        /** How long to stay visible while the service opens the camera. */
-        private const val ACTIVITY_LINGER_MS = 600L
+        /**
+         * How long to stay visible while the service opens the camera.
+         * Reduced from 600 to 150 ms in v1.1 to minimize the screen flash.
+         * If the locked-camera test shows camera open failing with a
+         * while-in-use error, raise this back toward 600 first.
+         */
+        private const val ACTIVITY_LINGER_MS = 150L
     }
 }
