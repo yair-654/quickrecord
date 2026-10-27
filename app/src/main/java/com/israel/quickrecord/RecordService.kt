@@ -51,6 +51,7 @@ class RecordService : Service() {
     companion object {
         const val ACTION_START = "com.israel.quickrecord.START"
         const val ACTION_STOP = "com.israel.quickrecord.STOP"
+        const val ACTION_FLIP = "com.israel.quickrecord.FLIP"
         const val EXTRA_IS_RECORDING = "isRecording"
         private const val CHANNEL_ID = "quickrecord_recording"
         private const val NOTIF_ID = 1
@@ -73,6 +74,7 @@ class RecordService : Service() {
     private var sensorOrientation = 90
     private var segmentStartMs = 0L
     private var zoneOffsetSec = 0L
+    private var useFrontCamera = false
 
     @Volatile private var switchingSegments = false
 
@@ -108,12 +110,18 @@ class RecordService : Service() {
                 stopEverything()
                 return START_NOT_STICKY
             }
+            ACTION_FLIP -> {
+                Log.i(Constants.TAG, "Flip requested")
+                flipCamera()
+                return START_NOT_STICKY
+            }
             ACTION_START -> {
                 if (Constants.isRecording) {
                     Log.w(Constants.TAG, "Start requested but already recording; ignoring")
                     return START_NOT_STICKY
                 }
                 Log.i(Constants.TAG, "Start requested")
+                useFrontCamera = false
                 registerBatteryReceiver()
                 registerCameraAvailability()
                 startMicPolling()
@@ -170,21 +178,25 @@ class RecordService : Service() {
     private fun openCameraForVideo(withAudio: Boolean) {
         try {
             val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            val cameraId = pickBackCamera(cm)
+            val cameraId = pickCamera(cm, useFrontCamera)
             if (cameraId == null) {
-                Log.w(Constants.TAG, "No back camera; falling back to audio only")
+                Log.w(Constants.TAG, "Camera not found; falling back to audio only")
                 if (withAudio) {
                     mode = Mode.AUDIO_ONLY
                     updateNotificationForMode(Mode.AUDIO_ONLY)
                     setupAudioOnlyRecording()
                 } else {
-                    fail("No back-facing camera found and no microphone permission.")
+                    fail("No camera found and no microphone permission.")
                 }
                 return
             }
             val chars = cm.getCameraCharacteristics(cameraId)
             sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
-            Log.i(Constants.TAG, "Opening camera $cameraId, sensorOrientation=$sensorOrientation")
+            Log.i(
+                Constants.TAG,
+                "Opening camera $cameraId (front=$useFrontCamera), " +
+                    "sensorOrientation=$sensorOrientation"
+            )
             cm.openCamera(cameraId, cameraStateCallback, cameraHandler)
         } catch (e: SecurityException) {
             Log.w(Constants.TAG, "openCamera SecurityException: ${e.message}")
@@ -246,6 +258,44 @@ class RecordService : Service() {
             setupVideoRecording(cam, false)
         } else {
             openCameraForVideo(false)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Camera flip
+    // ------------------------------------------------------------------
+
+    /**
+     * Flips between back and front camera mid-session. MediaRecorder cannot
+     * swap inputs while recording, so the current segment is saved and a
+     * new file is immediately started with the other camera.
+     */
+    private fun flipCamera() {
+        if (mode != Mode.FULL && mode != Mode.VIDEO_ONLY) {
+            Log.w(Constants.TAG, "Flip requested but not in video mode; ignoring")
+            return
+        }
+        if (switchingSegments) {
+            Log.w(Constants.TAG, "Flip requested while switching; ignoring")
+            return
+        }
+        useFrontCamera = !useFrontCamera
+        Log.i(Constants.TAG, "Flipping camera, front=$useFrontCamera")
+
+        // If the new camera turns out to be unusable, fall back to audio,
+        // same as any other camera failure.
+        switchingSegments = true
+        mainHandler.post {
+            teardownSegment(true)
+            switchingSegments = false
+            // Preserve the current audio capability of the session.
+            val withMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+            mode = if (withMic) Mode.FULL else Mode.VIDEO_ONLY
+            updateNotificationForMode(mode!!)
+            handlerThread = HandlerThread("QuickRecordCamera").also { it.start() }
+            cameraHandler = Handler(handlerThread!!.looper)
+            openCameraForVideo(withMic)
         }
     }
 
@@ -375,7 +425,12 @@ class RecordService : Service() {
             val folder = (Constants.customFolderOverride ?: Constants.DEFAULT_FOLDER)
                 .trim().replace("/", "-")
                 .ifEmpty { Constants.DEFAULT_FOLDER }
-            val name = if (video) "VID_${stamp}.mp4" else "AUD_${stamp}.m4a"
+            val suffix = if (useFrontCamera && video) "_F" else ""
+            val name = if (video) {
+                "VID_${stamp}$suffix.mp4"
+            } else {
+                "AUD_${stamp}.m4a"
+            }
             val now = System.currentTimeMillis()
             segmentStartMs = now
             val values = ContentValues().apply {
@@ -698,7 +753,7 @@ class RecordService : Service() {
             Mode.FULL -> getString(R.string.notif_recording_text)
         }
 
-        return Notification.Builder(this, CHANNEL_ID)
+        val builder = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.notif_recording_title))
             .setContentText(text)
             .setSmallIcon(R.drawable.ic_tile)
@@ -712,7 +767,23 @@ class RecordService : Service() {
             .setUsesChronometer(true)
             .setOnlyAlertOnce(true)
             .setWhen(System.currentTimeMillis())
-            .build()
+
+        // Flip button only makes sense while a camera is in use.
+        if (current == Mode.FULL || current == Mode.VIDEO_ONLY) {
+            val flipIntent = Intent(this, RecordService::class.java)
+                .apply { action = ACTION_FLIP }
+            val flipPi = PendingIntent.getService(
+                this, 2, flipIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(
+                Notification.Action.Builder(
+                    null, getString(R.string.notif_action_flip), flipPi
+                ).build()
+            )
+        }
+
+        return builder.build()
     }
 
     private fun updateNotificationForMode(current: Mode) {
@@ -771,11 +842,13 @@ class RecordService : Service() {
     // Teardown
     // ------------------------------------------------------------------
 
-    private fun pickBackCamera(cm: CameraManager): String? {
+    private fun pickCamera(cm: CameraManager, front: Boolean): String? {
+        val wanted = if (front) CameraCharacteristics.LENS_FACING_FRONT
+        else CameraCharacteristics.LENS_FACING_BACK
         for (id in cm.cameraIdList) {
             val chars = cm.getCameraCharacteristics(id)
             val facing = chars.get(CameraCharacteristics.LENS_FACING)
-            if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK) return id
+            if (facing != null && facing == wanted) return id
         }
         return null
     }
