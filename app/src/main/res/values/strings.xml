@@ -8,6 +8,7 @@
     <string name="notif_recording_title">Recording in progress</string>
     <string name="notif_recording_text">Tap the tile again or Stop to save</string>
     <string name="notif_action_stop">Stop</string>
+    <string name="notif_action_flip">Flip</string>
     <string name="notif_video_only">Video only, microphone unavailable</string>
     <string name="notif_audio_only">Audio only, camera unavailable</string>
     <string name="notif_segment_switch">Switching recording mode</string>
